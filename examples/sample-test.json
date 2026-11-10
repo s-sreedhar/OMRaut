@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "test": {"title": "Science Unit Test", "date": "2026-11-10", "class": "10A", "subject": "Science", "sections": [{"title": "Physics", "subject": "Science", "question_start": 1, "question_end": 5, "topic": "Motion"}]},
+  "sheet": {"width_mm": 210, "height_mm": 297, "questions_per_column": 3, "columns": 2, "options": ["A", "B", "C", "D"], "roll_number_digits": 6, "set_codes": ["A", "B", "C"], "fields": ["name", "class"], "corner_mark_size_mm": 8},
+  "questions": [{"id": 1, "section": "Physics", "topic": "Motion"}, {"id": 2, "section": "Physics", "topic": "Motion"}, {"id": 3, "section": "Physics", "topic": "Motion"}, {"id": 4, "section": "Physics", "topic": "Motion"}, {"id": 5, "section": "Physics", "topic": "Motion"}],
+  "sets": {"A": {"answer_key": {"1": "B", "2": "A", "3": "D", "4": "C", "5": "B"}}, "B": {"answer_key": {"1": "A", "2": "D", "3": "C", "4": "B", "5": "A"}}, "C": {"answer_key": {"1": "D", "2": "C", "3": "B", "4": "A", "5": "D"}}},
+  "scoring": {"correct": 4, "incorrect": -1, "blank": 0, "partial_credit": {}, "bonus_questions": [], "dropped_questions": []}
+}

@@ -1,0 +1,35 @@
+name: Windows desktop validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-package:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install application and build dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run core and synthetic reader tests
+        run: python -m pytest -q
+      - name: Smoke-check fixture CLI
+        run: python -m omr_exam.harness
+      - name: Install Velopack CLI
+        run: dotnet tool install --global vpk --version 1.2.161
+      - name: Build Windows installer
+        shell: pwsh
+        env:
+          OMR_UPDATE_SOURCE_URL: ${{ secrets.OMR_UPDATE_SOURCE_URL }}
+        run: .\installer\build.ps1
+      - name: Install, smoke-test, and verify a local OTA update
+        shell: pwsh
+        run: .\installer\test-installed-package.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OMRExamApp-Velopack-Windows
+          path: dist/velopack/*

@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omr-exam.local/schemas/test-config.schema.json",
+  "title": "OMR test configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "test",
+    "sheet",
+    "questions",
+    "sets",
+    "scoring"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "test": {
+      "type": "object",
+      "required": [
+        "title",
+        "date",
+        "class",
+        "subject"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "subject",
+              "question_start",
+              "question_end"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1
+              },
+              "question_start": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "question_end": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "topic": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "sheet": {
+      "type": "object",
+      "required": [
+        "width_mm",
+        "height_mm",
+        "questions_per_column",
+        "columns",
+        "options",
+        "roll_number_digits",
+        "set_codes",
+        "fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "width_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "questions_per_column": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "roll_number_digits": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "set_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "name",
+              "class"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "corner_mark_size_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "section",
+          "topic"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "section": {
+            "type": "string",
+            "minLength": 1
+          },
+          "topic": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "answer_key"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "answer_key": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "required": [
+        "correct",
+        "incorrect",
+        "blank"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "correct": {
+          "type": "number"
+        },
+        "incorrect": {
+          "type": "number"
+        },
+        "blank": {
+          "type": "number"
+        },
+        "partial_credit": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "bonus_questions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "dropped_questions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "reader": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mark_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "faint_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        }
+      }
+    }
+  }
+}

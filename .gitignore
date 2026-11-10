@@ -1,0 +1,113 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+
+# Distribution / packaging
+build/
+dist/
+develop-eggs/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+
+# Inno Setup and Windows installer outputs
+installer/Output/
+installer/*.exe
+Output/
+dist/installer/
+*.iss.bak
+
+# Testing & Coverage
+.pytest_cache/
+.pytest_tmp/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Type checking and linting
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Virtual Environments
+.env
+.env.*
+!.env.example
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# SQLite and local storage
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Release signing artifacts & keys
+latest.json
+latest.json.sig
+*.key
+*.pem
+*.priv
+*.pfx
+*.p12
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Editors and IDEs
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Logs & temporary outputs
+*.log
+logs/
+temp/
+tmp/
