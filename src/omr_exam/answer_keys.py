@@ -66,6 +66,32 @@ def parse_pasted_key(text: str, config: dict[str, Any]) -> dict[str, str]:
     return validate_answer_key(config, pairs)
 
 
+def parse_compact_key(text: str, config: dict[str, Any]) -> dict[str, str]:
+    """Parse a typed answer string such as `ABCDDCBA` or `A B C D` (one answer per question, in order).
+
+    Also accepts `1-A 2-B` / `1:A, 2:B` style pairs. Every character is checked
+    against the test's options and the count must match the question count exactly.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return {}
+    options = {str(value).upper() for value in config["sheet"]["options"]}
+    questions = [str(item["id"]) for item in config["questions"]]
+    if any(len(option) != 1 for option in options):
+        return parse_pasted_key(text, config)
+    import re
+    pair_matches = re.findall(r"(\d+)\s*[-:=.)]?\s*([A-Za-z])", stripped)
+    if pair_matches and re.fullmatch(r"(?:\s*\d+\s*[-:=.)]?\s*[A-Za-z]\s*[,;]?)+", stripped):
+        return parse_pasted_key(chr(10).join(f"{q}{chr(9)}{a}" for q, a in pair_matches), config)
+    letters = [character.upper() for character in stripped if not character.isspace() and character not in ",;"]
+    bad = sorted({character for character in letters if character not in options})
+    if bad:
+        raise ValueError(f"Not a valid option: {', '.join(bad)}. Allowed: {', '.join(sorted(options))}")
+    if len(letters) != len(questions):
+        raise ValueError(f"You typed {len(letters)} answers but the test has {len(questions)} questions")
+    return validate_answer_key(config, dict(zip(questions, letters)))
+
+
 def import_excel_key(path: str | Path, config: dict[str, Any], *, sheet_name: str | None = None) -> dict[str, str]:
     try:
         from openpyxl import load_workbook

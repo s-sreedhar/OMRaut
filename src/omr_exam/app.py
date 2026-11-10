@@ -20,6 +20,7 @@ if "--smoke-test" in sys.argv:
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication
 
+from omr_exam.theme import apply_light_theme
 from omr_exam.ui import MainWindow
 
 
@@ -94,6 +95,7 @@ def _smoke_test() -> int:
         workbook.active.title = "Smoke"
         workbook.save(temporary_path / "smoke.xlsx")
         application = QApplication(["OMRExamApp", "--smoke-test"])
+        apply_light_theme(application)
         window = MainWindow(str(database_path))
         window.show()
         application.processEvents()
@@ -124,6 +126,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("OMR Exam App")
     app.setOrganizationName("OMR Exam App")
+    apply_light_theme(app)
     data_dir = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
     window = MainWindow(data_dir + "/omr-exam.sqlite3")
     window.show()

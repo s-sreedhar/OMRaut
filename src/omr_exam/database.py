@@ -310,6 +310,25 @@ class Repository:
                                                      (bool(previous_nonidentity_issues) or not record["flags"]))
             self.set_result_flags(int(record["id"]), flags, review_required=review_required)
 
+    def students(self) -> list[dict[str, Any]]:
+        with _database_connection(self.path) as db:
+            db.row_factory = sqlite3.Row
+            return [dict(row) for row in db.execute("SELECT roll_number,name,class_name FROM students ORDER BY roll_number")]
+
+    def save_student(self, roll_number: str, name: str, class_name: str = "") -> None:
+        roll_number = roll_number.strip()
+        if not roll_number:
+            raise ValueError("Roll number is required")
+        if not name.strip():
+            raise ValueError("Student name is required")
+        with _database_connection(self.path) as db:
+            db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name",
+                       (roll_number, name.strip(), class_name.strip()))
+
+    def delete_student(self, roll_number: str) -> None:
+        with _database_connection(self.path) as db:
+            db.execute("DELETE FROM students WHERE roll_number=?", (roll_number,))
+
     def student_exists(self, roll_number: str) -> bool:
         with _database_connection(self.path) as db:
             return db.execute("SELECT 1 FROM students WHERE roll_number=?", (roll_number,)).fetchone() is not None

@@ -59,6 +59,8 @@ htmlcov/
 .env.*
 !.env.example
 .venv/
+.venv*/
+.venv-build/
 env/
 venv/
 ENV/

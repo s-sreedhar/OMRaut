@@ -23,6 +23,17 @@ try {
   $BuildUpdateConfig = @{ source_url = $env:OMR_UPDATE_SOURCE_URL } | ConvertTo-Json
   $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
   [System.IO.File]::WriteAllText($UpdateConfig, $BuildUpdateConfig, $Utf8NoBom)
+  Get-Process -Name "OMRExamApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 300
+  $Cv2Lock = Join-Path $Workspace "dist\OMRExamApp\_internal\cv2\cv2.pyd"
+  if (Test-Path -LiteralPath $Cv2Lock) {
+    try {
+      $Stream = [System.IO.File]::OpenWrite($Cv2Lock)
+      $Stream.Dispose()
+    } catch {
+      throw "Cannot rebuild: OMRExamApp is currently running and locking '$Cv2Lock'. Please close the running OMRExamApp window or terminate it from Task Manager, then run build.bat again."
+    }
+  }
   & $PythonCommand -m PyInstaller --noconfirm --clean omr_exam.spec
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
   $PackagedApp = Join-Path $Workspace "dist\OMRExamApp\OMRExamApp.exe"
