@@ -42,6 +42,6 @@ The reader corrects perspective and scan rotation from coded corner marks, class
 
 ## Windows installer and updates
 
-Install Python 3.11–3.13, .NET SDK, and the Velopack CLI (`dotnet tool install --global vpk --version 1.2.161`) on the Windows build machine, then run `installer/build.ps1`. If the supported interpreter is not the default `python`, set `OMR_PYTHON` to its executable path. The script produces a smoke-checked PyInstaller app folder and Velopack setup/update artifacts under `dist/velopack`. Set `OMR_UPDATE_SOURCE_URL` to the HTTPS feed URL before building to enable in-app OTA updates; leave it unset for a local test build. See [release notes](docs/release.md).
+Install Python 3.11–3.13, .NET SDK, and the Velopack CLI (`dotnet tool install --global vpk --version 1.2.161`) on the Windows build machine, then run `installer/build.ps1` for a local package. To build, validate, version, commit, and publish a public GitHub release in one run, use `installer/publish-release.ps1`. See the [release guide](docs/release.md).
 
 See the [operator guide](docs/user-guide.md) for the complete test, print, roster, scan, review, export, backup, and update workflow.
