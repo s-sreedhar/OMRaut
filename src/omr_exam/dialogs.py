@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QDate, Qt, QTimer
@@ -14,20 +15,20 @@ from PySide6.QtWidgets import (
 
 from omr_exam import theme
 from omr_exam.answer_keys import (import_excel_key, import_master_sheet, parse_compact_key,
-                                  parse_pasted_key, validate_answer_key)
+                                  parse_pasted_key, validate_answer_key, write_sample_key)
 from omr_exam.config import validate_config
 from omr_exam.ingest import scan_pages
 from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
 from omr_exam.theme import BAD_BG, GOOD_BG
-from omr_exam.widgets import (AppDialog, Banner, PillDelegate, TintDelegate, alert, ask_text, button, combo, confirm, divider, label,
-                              table)
+from omr_exam.widgets import (AppDialog, Banner, ChoiceDelegate, PillDelegate, Segmented, SuggestField, TintDelegate, alert, ask_text,
+                              button, confirm, divider, label, table)
 
 IMAGE_TYPES = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;All files (*.*)"
 
 
-def _label(text: str, name: str = "") -> QLabel:
-    return label(text, name)
+def _label(text: str, name: str = "", wrap: bool = True) -> QLabel:
+    return label(text, name, wrap)
 
 
 def _footer(layout: QVBoxLayout) -> QHBoxLayout:
@@ -37,16 +38,6 @@ def _footer(layout: QVBoxLayout) -> QHBoxLayout:
     row.setSpacing(10)
     layout.addLayout(row)
     return row
-
-
-class _EditableCombo(QComboBox):
-    """A suggested-value field that keeps the familiar text() API for callers."""
-
-    def text(self) -> str:
-        return self.currentText()
-
-    def setText(self, value: str) -> None:
-        self.setEditText(value)
 
 
 class NewTestDialog(QDialog):
@@ -60,11 +51,9 @@ class NewTestDialog(QDialog):
         self.template: TestTemplate = TEMPLATES[2]
 
         self.title = QLineEdit(); self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
-        self.class_name = _EditableCombo(); self.class_name.setEditable(True); self.class_name.setInsertPolicy(QComboBox.InsertAtBottom)
-        self.class_name.addItems(sorted(set(classes or []), key=str.casefold)); self.class_name.setCurrentText(""); self.class_name.setPlaceholderText("Choose or type a class")
-        self.subject = _EditableCombo(); self.subject.setEditable(True); self.subject.setInsertPolicy(QComboBox.InsertAtBottom)
-        self.subject.addItems(sorted(set(subjects or []), key=str.casefold)); self.subject.setCurrentText(""); self.subject.setPlaceholderText("Choose or type a subject")
-        self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(True); self.date.setDisplayFormat("d MMM yyyy")
+        self.class_name = SuggestField(classes or [], "e.g. 10A")
+        self.subject = SuggestField(subjects or [], "e.g. Science")
+        self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(False); self.date.setDisplayFormat("d MMM yyyy")
 
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
         self.options = QLineEdit()
@@ -122,14 +111,14 @@ class NewTestDialog(QDialog):
                                                     ("Subject", self.subject), ("Date", self.date))):
             form.addWidget(_label(caption, "hint"), 0, column)
             form.addWidget(widget, 1, column)
-        form.setColumnStretch(0, 3); form.setColumnStretch(1, 1); form.setColumnStretch(2, 2); form.setColumnStretch(3, 1)
+        form.setColumnStretch(0, 4); form.setColumnStretch(1, 2); form.setColumnStretch(2, 3); form.setColumnStretch(3, 2)
         root.addLayout(form)
         self.form_error = _label("", "hint")
         self.form_error.hide()
         root.addWidget(self.form_error)
         self.title.textChanged.connect(lambda _text: self._clear_invalid(self.title))
-        self.class_name.currentTextChanged.connect(lambda _text: self._clear_invalid(self.class_name))
-        self.subject.currentTextChanged.connect(lambda _text: self._clear_invalid(self.subject))
+        self.class_name.textChanged.connect(lambda _text: self._clear_invalid(self.class_name))
+        self.subject.textChanged.connect(lambda _text: self._clear_invalid(self.subject))
         self.summary = Banner("", "info")
         root.addWidget(self.summary)
         for signal in (self.question_count.valueChanged, self.options.textChanged, self.use_sets.toggled,
@@ -198,8 +187,8 @@ class NewTestDialog(QDialog):
         self.customize.setVisible(on)
         self.customize_toggle.setIcon(icon("chevron-down" if on else "chevron-right", theme.ACCENT, 16))
 
-    def _clear_invalid(self, field: QLineEdit):
-        theme.set_property(field, "invalid", "false")
+    def _clear_invalid(self, field: QWidget):
+        theme.set_property(getattr(field, "edit", field), "invalid", "false")
         self.form_error.hide()
 
     def apply_template(self, template: TestTemplate):
@@ -309,7 +298,7 @@ class NewTestDialog(QDialog):
         sections = [x.strip() for x in self.sections.text().split(",") if x.strip()] or None
         fields = [name for name, checked in (("name", self.name_field.isChecked()), ("class", self.class_field.isChecked())) if checked]
         return build_from_template(
-            self.template, title=self.title.text(), class_name=self.class_name.currentText(), subject=self.subject.currentText(),
+            self.template, title=self.title.text(), class_name=self.class_name.text(), subject=self.subject.text(),
             test_date=self.date.date().toString("yyyy-MM-dd"),
             question_count=self.question_count.value(),
             options=[x.strip() for x in self.options.text().split(",") if x.strip()],
@@ -324,10 +313,10 @@ class NewTestDialog(QDialog):
 
     def attempt_accept(self):
         missing = [(field, name) for field, name in ((self.title, "a test title"), (self.class_name, "the class"),
-                                                     (self.subject, "the subject")) if not (field.currentText() if isinstance(field, QComboBox) else field.text()).strip()]
+                                                     (self.subject, "the subject")) if not field.text().strip()]
         if missing:
             for field, _name in missing:
-                theme.set_property(field, "invalid", "true")
+                theme.set_property(getattr(field, "edit", field), "invalid", "true")
             self.form_error.setText(f"<span style='color:{theme.BAD}'>Please enter {', '.join(name for _f, name in missing)}.</span>")
             self.form_error.show()
             missing[0][0].setFocus()
@@ -342,29 +331,9 @@ class NewTestDialog(QDialog):
                 self.customize_toggle.setChecked(True)
 
 
-class _AnswerDelegate(TintDelegate):
-    """Choose a valid answer directly or type it with the keyboard."""
-
-    def __init__(self, options: list[str], parent=None):
-        super().__init__(parent)
-        self.options = [str(o).upper() for o in options]
-
-    def createEditor(self, parent, option, index):
-        editor = combo()
-        editor.setParent(parent)
-        editor.setEditable(True)
-        editor.addItem("Blank", "")
-        editor.addItems(self.options)
-        editor.setCurrentIndex(0)
-        return editor
-
-    def setModelData(self, editor, model, index):
-        value = editor.currentText().strip().upper()
-        model.setData(index, "" if value == "BLANK" else value)
-
-    def setEditorData(self, editor, index):
-        value = str(index.data(Qt.EditRole) or "").strip().upper()
-        editor.setCurrentIndex(max(0, editor.findText(value)))
+def _AnswerDelegate(options: list[str], parent=None) -> ChoiceDelegate:
+    """Answer cells accept only the sheet's options, typed straight into the cell (no pop-up list)."""
+    return ChoiceDelegate(options, parent)
 
 
 class AnswerKeyDialog(QDialog):
@@ -419,13 +388,14 @@ class AnswerKeyDialog(QDialog):
         sv = QVBoxLayout(side); sv.setContentsMargins(16, 16, 16, 16); sv.setSpacing(10)
         sv.addWidget(_label("FASTEST WAY", "eyebrow"))
         sv.addWidget(_label("Type the whole key", "cardTitle"))
-        self.set_picker = combo(); self.set_picker.addItems([f"Set {c}" for c in self.codes])
+        self.set_picker = Segmented([(c, f"Set {c}") for c in self.codes])
         self.set_picker.setAccessibleName("Set to fill")
-        picker_row = QHBoxLayout(); picker_row.addWidget(_label("Fill", "hint")); picker_row.addWidget(self.set_picker, 1)
-        sv.addLayout(picker_row)
+        self.set_picker_caption = _label("Fill which set?", "hint")
+        sv.addWidget(self.set_picker_caption)
+        sv.addWidget(self.set_picker)
         if self.single:
             self.set_picker.hide()
-            picker_row.itemAt(0).widget().hide()
+            self.set_picker_caption.hide()
         example = "".join(self.options[i % len(self.options)] for i in range(8))
         self.quick = QLineEdit(); self.quick.setPlaceholderText(f"e.g. {example}…  or  1-A 2-B 3-C")
         self.quick.setAccessibleName("Answers in question order")
@@ -442,7 +412,8 @@ class AnswerKeyDialog(QDialog):
                                          ("Import an Excel file", self.import_excel, "upload"),
                                          ("Import an answer key file (JSON)", self.import_json_key, "upload"),
                                          ("Read a filled-in master sheet", self.import_master_sheet, "scan"),
-                                         ("Save this key as a file", self.export_json_key, "download")):
+                                         ("Save this key as a file", self.export_json_key, "download"),
+                                         ("Download a sample file to fill in", self.save_sample_key, "sheet")):
             sv.addWidget(button(text, handler, "link", icon_name))
         sv.addStretch(1)
         sv.addWidget(divider())
@@ -507,7 +478,10 @@ class AnswerKeyDialog(QDialog):
             item.setBackground(QBrush(QColor(BAD_BG)))
 
     def _set_column(self) -> int:
-        return 2 + self.set_picker.currentIndex()
+        return 2 + self._set_index()
+
+    def _set_index(self) -> int:
+        return self.codes.index(self.set_picker.current()) if self.set_picker.current() in self.codes else 0
 
     def _fill_column(self, column: int, values: dict[str, str]):
         self._loading = True
@@ -545,14 +519,14 @@ class AnswerKeyDialog(QDialog):
             parsed = parse_compact_key(self.quick.text(), self.config)
             self._fill_column(self._set_column(), parsed)
             self.quick.clear()
-            if self.set_picker.currentIndex() + 1 < self.set_picker.count():
-                self.set_picker.setCurrentIndex(self.set_picker.currentIndex() + 1)
+            if self._set_index() + 1 < len(self.codes):
+                self.set_picker.set_current(self.codes[self._set_index() + 1])
         except ValueError as exc:
             self.quick_error.setText(f"<span style='color:{theme.BAD}'>{exc}</span>")
             self.quick_error.show()
 
     def paste_key(self):
-        text = ask_text(self, "Paste answer key", f"Paste the answers for <b>{self.set_picker.currentText()}</b> as rows "
+        text = ask_text(self, "Paste answer key", f"Paste the answers for <b>{'the key' if self.single else 'Set ' + self.codes[self._set_index()]}</b> as rows "
                         f"(question number, answer) or one answer per line in question order.", "1\tB\n2\tD\n3\tA", "Fill this set")
         if text is None:
             return
@@ -613,6 +587,20 @@ class AnswerKeyDialog(QDialog):
         except Exception as exc:
             alert(self, "The answer key file could not be imported", str(exc), "warn")
 
+    def save_sample_key(self):
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "Save a sample answer key", "answer-key-sample.json",
+            "JSON file (*.json);;Excel workbook (*.xlsx);;Text, one line (*.txt)")
+        if not path:
+            return
+        try:
+            if not Path(path).suffix:
+                path += ".xlsx" if "xlsx" in chosen else ".txt" if "txt" in chosen else ".json"
+            write_sample_key(self.config, path)
+            self.foot_note.setText(f"Sample saved to {path}. Replace the placeholder answers, then import it here.")
+        except Exception as exc:
+            alert(self, "The sample could not be saved", str(exc), "warn")
+
     def export_json_key(self):
         try:
             keys = {}
@@ -641,7 +629,7 @@ class AnswerKeyDialog(QDialog):
             pages = list(scan_pages(path))
             if len(pages) != 1:
                 raise ValueError("Choose a single-page image or a one-page PDF master sheet")
-            code = self.codes[self.set_picker.currentIndex()]
+            code = self.codes[self._set_index()]
             parsed = import_master_sheet(pages[0][1], self.config, code)
             self._fill_column(self._set_column(), parsed)
             self.foot_note.setText("Key read from the scan. Compare it with your master copy before saving.")
@@ -649,7 +637,7 @@ class AnswerKeyDialog(QDialog):
             alert(self, "The master sheet could not be read", str(exc), "warn")
 
     def clear_set(self):
-        if confirm(self, f"Clear {self.set_picker.currentText()}?", "Every answer entered for this set will be removed.",
+        if confirm(self, f"Clear {'the key' if self.single else 'Set ' + self.codes[self._set_index()]}?", "Every answer entered for this set will be removed.",
                    "Clear set", danger=True):
             self._fill_column(self._set_column(), {})
 
@@ -701,9 +689,7 @@ class StudentDialog(AppDialog):
             self.roll.setReadOnly(True)
             self.roll.setEnabled(False)
         self.name = QLineEdit(name); self.name.setPlaceholderText("Full name")
-        self.class_name = combo(); self.class_name.setEditable(True); self.class_name.setInsertPolicy(QComboBox.InsertAtBottom)
-        self.class_name.addItems(sorted(set(classes or []), key=str.casefold)); self.class_name.setCurrentText(class_name)
-        self.class_name.setPlaceholderText("Choose or type a class (optional)")
+        self.class_name = SuggestField(classes or [], "Class (optional)", class_name)
         form = QFormLayout(); form.setVerticalSpacing(10); form.setHorizontalSpacing(16)
         form.addRow("Roll number", self.roll); form.addRow("Name", self.name); form.addRow("Class", self.class_name)
         self.body.addLayout(form)
@@ -725,7 +711,7 @@ class StudentDialog(AppDialog):
         self.accept()
 
     def values(self) -> tuple[str, str, str]:
-        return self.roll.text().strip(), self.name.text().strip(), self.class_name.currentText().strip()
+        return self.roll.text().strip(), self.name.text().strip(), self.class_name.text().strip()
 
 
 class BatchPickerDialog(AppDialog):
@@ -797,3 +783,52 @@ class BatchLogDialog(AppDialog):
     def _copy(self):
         QGuiApplication.clipboard().setText("\n".join(self._lines))
         self.copy_button.setText("Copied")
+
+
+class ExportDialog(AppDialog):
+    """Choose what to export: save one file, or tick several and save them together in one folder."""
+
+    def __init__(self, parent, defaults: tuple[str, ...] = ("xlsx", "pdf", "cards")):
+        from omr_exam.reports import EXPORTS
+
+        super().__init__(parent, "Export results", "Save one file, or tick several and save them together in a folder.",
+                         "download", "info", width=620)
+        self.action: tuple[str, Any] | None = None
+        self.checks: dict[str, QCheckBox] = {}
+        for kind, (title, hint, _name) in EXPORTS.items():
+            row = QFrame(); row.setObjectName("issue")
+            line = QHBoxLayout(row); line.setContentsMargins(12, 9, 12, 9); line.setSpacing(10)
+            check = QCheckBox(); check.setChecked(kind in defaults); check.setAccessibleName(f"Include {title}")
+            check.toggled.connect(self._refresh)
+            self.checks[kind] = check
+            line.addWidget(check)
+            text = QVBoxLayout(); text.setSpacing(1)
+            text.addWidget(_label(title, "strong", wrap=False)); text.addWidget(_label(hint, "hint"))
+            line.addLayout(text, 1)
+            line.addWidget(button("Save as…", lambda k=kind: self._one(k), "", "download"))
+            self.body.addWidget(row)
+        pick = QHBoxLayout()
+        pick.addWidget(button("Select all", lambda: self._set_all(True), "link"))
+        pick.addWidget(button("Clear", lambda: self._set_all(False), "link"))
+        pick.addStretch(1)
+        self.body.addLayout(pick)
+        self.add_button("Close", "", accept=False)
+        self.save_all = self.add_button("Export selected to a folder", "primary", handler=self._many, default=True)
+        self._refresh()
+
+    def _set_all(self, state: bool):
+        for check in self.checks.values():
+            check.setChecked(state)
+
+    def _refresh(self, *_args):
+        count = sum(check.isChecked() for check in self.checks.values())
+        self.save_all.setEnabled(count > 0)
+        self.save_all.setText(f"Export {count} selected to a folder" if count else "Tick at least one file")
+
+    def _one(self, kind: str):
+        self.action = ("one", kind)
+        self.accept()
+
+    def _many(self):
+        self.action = ("many", [kind for kind, check in self.checks.items() if check.isChecked()])
+        self.accept()

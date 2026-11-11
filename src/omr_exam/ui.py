@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter,
@@ -20,12 +20,11 @@ from omr_exam import __version__, theme
 from omr_exam.answer_keys import validate_answer_key
 from omr_exam.config import load_config
 from omr_exam.database import Repository
-from omr_exam.dialogs import AnswerKeyDialog, BatchLogDialog, BatchPickerDialog, NewTestDialog, StudentDialog
+from omr_exam.dialogs import AnswerKeyDialog, BatchLogDialog, BatchPickerDialog, ExportDialog, NewTestDialog, StudentDialog
 from omr_exam.icons import icon, icon_size, pixmap
 from omr_exam.ingest import SUPPORTED_SCAN_SUFFIXES, count_scan_pages, scan_files_in_folder
-from omr_exam.reports import (class_results, export_csv, export_item_analysis_csv, export_report_pdf,
-                              export_student_scorecards_pdf, export_subject_analysis_csv,
-                              export_topic_analysis_csv, export_xlsx, item_analysis)
+from omr_exam.reports import (EXPORTS, class_results, distractor_analysis, export_all, export_function, item_analysis,
+                              summary_stats)
 from omr_exam.review import ReviewPage
 from omr_exam.scan_job import ScanOutcome, ScanProgress, ScanWorker, process_scan_batch
 from omr_exam.sheets import generate_sheet_pdf
@@ -33,7 +32,7 @@ from omr_exam.templates import TEMPLATES, build_from_template
 from omr_exam.updater import (UPDATE_SOURCE_URL, check_for_update, download_and_apply,
                               should_check_automatically)
 from omr_exam.widgets import (Banner, BusyDialog, DropZone, EmptyState, Histogram, Pill, PillDelegate, StatTile,
-                              Stepper, Toast, alert, button, card, combo, confirm, divider, icon_tile, label, table)
+                              Segmented, Stepper, Toast, alert, button, card, combo, confirm, divider, icon_tile, label, table)
 
 IMAGE_TYPES = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;All files (*.*)"
 
@@ -1207,7 +1206,7 @@ class MainWindow(QMainWindow):
         self.drop_zone.set_active_look(enabled and not busy)
         if hasattr(self, "scan_dpi_setting"):
             self.reader_summary.setText(f"PDF pages are rendered at <b>{self.scan_dpi_setting.value()} DPI</b> in "
-                                        f"<b>{self.scan_color_setting.currentText().lower()}</b>.")
+                                        f"<b>{self.scan_color_setting.current()}</b>.")
         self._refresh_staged()
         batches = self.repo.batches(self.active_test_id) if self.active_test_id is not None else []
         counts = self.repo.pending_review_counts()
@@ -1316,7 +1315,7 @@ class MainWindow(QMainWindow):
 
     # -- reading
     def _scan_settings(self) -> tuple[int, str]:
-        return self.scan_dpi_setting.value(), str(self.scan_color_setting.currentData())
+        return self.scan_dpi_setting.value(), self.scan_color_setting.current() or "grayscale"
 
     def start_scan(self):
         if self._scan_worker is not None or not self.staged_scans:
@@ -1446,22 +1445,10 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ results
     def _build_results_page(self) -> QWidget:
-        more = button("More exports", None, "", "file-export")
-        menu = QMenu(more)
-        menu.addSection("Class marklist")
-        menu.addAction("CSV file", lambda: self.export_results("csv"))
-        menu.addAction("PDF report", lambda: self.export_results("pdf"))
-        menu.addSection("For students")
-        menu.addAction("Student scorecards (PDF)", lambda: self.export_results("cards"))
-        menu.addSection("Analysis")
-        menu.addAction("Item analysis (CSV)", lambda: self.export_results("item"))
-        menu.addAction("Topic analysis (CSV)", lambda: self.export_results("topic"))
-        menu.addAction("Subject analysis (CSV)", lambda: self.export_results("subject"))
-        more.setMenu(menu)
-        self.export_more_button = more
-        self.export_main_button = button("Export marklist (Excel)", lambda: self.export_results("xlsx"), "primary", "download")
+        self.export_main_button = button("Export results", self.open_exports, "primary", "download")
+        self.export_more_button = self.export_main_button
         page, layout = _page("Results", "Scores for the open batch. Export once every flagged sheet has been reviewed.",
-                             (button("Open batch", self.load_saved_batch, "", "layers"), more, self.export_main_button))
+                             (button("Open batch", self.load_saved_batch, "", "layers"), self.export_main_button))
         self.results_summary = Banner("Scan sheets or open a batch to see results here.", "info")
         layout.addWidget(self.results_summary)
 
@@ -1469,8 +1456,9 @@ class MainWindow(QMainWindow):
         stats.setSpacing(14)
         self.result_stats: dict[str, StatTile] = {}
         for key, caption, icon_name in (("sheets", "Sheets", "sheet"), ("average", "Average score", "results"),
+                                        ("median", "Median", "results"),
                                         ("highest", "Highest", "chevron-up"), ("lowest", "Lowest", "chevron-down"),
-                                        ("pending", "Need review", "review")):
+                                        ("pass", "Pass rate", "check-circle"), ("pending", "Need review", "review")):
             tile = StatTile(caption, icon_name)
             tile.set_value("–")
             self.result_stats[key] = tile
@@ -1485,15 +1473,16 @@ class MainWindow(QMainWindow):
         dl.addWidget(self.histogram_hint)
         self.histogram = Histogram()
         dl.addWidget(self.histogram, 1)
+        self.quality_label = label("", "hint")
+        dl.addWidget(self.quality_label)
         charts.addWidget(distribution, 3)
         hardest, hl = card((1, 16, 1, 6), 8)
-        hl.addLayout(self._card_header("Hardest questions", "Lowest share of correct answers"))
-        self.hardest_table = table(["Question", "Topic", "Correct"], 1)
+        hl.addLayout(self._card_header("Question analysis", "Hardest first. Discrimination shows how well a question separates strong and weak students"))
+        self.hardest_table = table(["Q", "Topic", "Correct", "Discr.", "Top wrong"], 1)
         self.hardest_table.setFrameShape(QFrame.NoFrame)
         self.hardest_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.hardest_table.setMinimumHeight(232)
-        self.hardest_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.hardest_table.setAccessibleName("Hardest questions")
+        self.hardest_table.setAccessibleName("Question analysis, hardest first")
         hl.addWidget(self.hardest_table, 1)
         charts.addWidget(hardest, 2)
         layout.addLayout(charts)
@@ -1502,10 +1491,10 @@ class MainWindow(QMainWindow):
         split.setChildrenCollapsible(False)
         ranking, rl = card((1, 16, 1, 6), 8)
         rl.addLayout(self._card_header("Student ranking", "Select a student to see every answer"))
-        self.performance_table = table(["Rank", "Roll number", "Student", "Class", "Set", "Score", "Correct", "Wrong", "Blank", "Status"], 2)
+        self.performance_table = table(["Rank", "Roll number", "Student", "Class", "Set", "Score", "%", "Percentile", "Correct", "Wrong", "Blank", "Status"], 2)
         self.performance_table.setFrameShape(QFrame.NoFrame)
         self.performance_table.setMinimumHeight(250)
-        self.performance_table.setItemDelegateForColumn(9, PillDelegate(lambda text: "good" if text == "Ready" else "warn", self.performance_table))
+        self.performance_table.setItemDelegateForColumn(11, PillDelegate(lambda text: "good" if text == "Ready" else "warn", self.performance_table))
         self.performance_table.setAccessibleName("Ranked student performance")
         self.performance_table.currentCellChanged.connect(lambda row, _c, _pr, _pc: self.show_student_performance(row))
         rl.addWidget(self.performance_table, 1)
@@ -1558,6 +1547,20 @@ class MainWindow(QMainWindow):
         self.result_stats["average"].set_value(f"{sum(scores) / len(scores):.1f}")
         self.result_stats["highest"].set_value(f"{max(scores):g}")
         self.result_stats["lowest"].set_value(f"{min(scores):g}")
+        try:
+            figures = summary_stats(self.config, records)
+        except Exception:
+            figures = {}
+        self.result_stats["median"].set_value("–" if figures.get("median") is None else f"{figures['median']:g}")
+        self.result_stats["pass"].set_value("–" if figures.get("pass_rate") is None else f"{figures['pass_rate']:g}%",
+                                            f"at {figures.get('pass_percent', 40):g}% of the maximum")
+        reliability = figures.get("reliability")
+        meaning = ("" if reliability is None else " (excellent)" if reliability >= 0.8 else " (good)" if reliability >= 0.7
+                   else " (acceptable)" if reliability >= 0.6 else " (low, treat the ranking with care)")
+        self.quality_label.setText(
+            f"Spread (standard deviation) {figures.get('stdev', 0) or 0:g} · maximum {figures.get('maximum', 0):g} · "
+            + ("reliability needs at least two scored students and some variation" if reliability is None
+               else f"reliability (KR-20) {reliability:.2f}{meaning}"))
         self.result_stats["pending"].set_value(str(pending), "", "warn" if pending else "good")
         status = self.repo.batch_status(self.batch_id) if self.batch_id is not None else {"status": "complete"}
         if status["status"] != "complete":
@@ -1578,15 +1581,22 @@ class MainWindow(QMainWindow):
 
         try:
             analysis = [row for row in item_analysis(self.config, records) if row.get("difficulty") is not None]
+            wrong_option = {row["question"]: row for row in distractor_analysis(self.config, records)}
         except Exception:
-            analysis = []
+            analysis, wrong_option = [], {}
         analysis.sort(key=lambda row: (row["difficulty"], row["question"]))
-        hardest = analysis[:5]
-        self.hardest_table.setRowCount(len(hardest))
-        for index, row in enumerate(hardest):
+        self.hardest_table.setRowCount(len(analysis))
+        for index, row in enumerate(analysis):
+            wrong = wrong_option.get(row["question"], {})
+            discrimination = row.get("discrimination")
             self.hardest_table.setItem(index, 0, _item(f"Q{row['question']}"))
             self.hardest_table.setItem(index, 1, _item(row.get("topic") or "—"))
             self.hardest_table.setItem(index, 2, _item(f"{round(row['difficulty'] * 100)}%", align=Qt.AlignRight))
+            self.hardest_table.setItem(index, 3, _item("—" if discrimination is None else f"{discrimination:+.2f}", align=Qt.AlignRight))
+            self.hardest_table.setItem(index, 4, _item(f"{wrong['top_wrong']} ({wrong['top_wrong_count']})" if wrong.get("top_wrong") else "—",
+                                                       align=Qt.AlignRight))
+            if discrimination is not None and discrimination < 0.1:
+                self.hardest_table.item(index, 3).setForeground(QColor(theme.WARN))
 
         rows = self._result_rows = class_results(self.config, records)
         self.performance_table.blockSignals(True)
@@ -1596,10 +1606,12 @@ class MainWindow(QMainWindow):
             values = (record["rank"], record.get("roll_number", "") or "—", record.get("student_name", "") or "—",
                       record.get("class_name", "") or "—", record.get("set_code", "") or "—",
                       "—" if record.get("total") is None else f"{record['total']:g}",
+                      "—" if record.get("percent") is None else f"{record['percent']:g}",
+                      "—" if record.get("percentile") is None else f"{record['percentile']:g}",
                       record.get("correct", 0), record.get("incorrect", 0), record.get("blank", 0),
                       "Needs review" if record.get("review_required") else "Ready")
             for column, value in enumerate(values):
-                self.performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column in (0, 5, 6, 7, 8) else None))
+                self.performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column in (0, 5, 6, 7, 8, 9, 10) else None))
         self.performance_table.blockSignals(False)
         if rows:
             self.performance_table.selectRow(0)
@@ -1629,35 +1641,58 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.question_performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column == 5 else None))
 
-    def export_results(self, kind: str):
+    def open_exports(self):
+        if not self._exports_allowed():
+            return
+        dialog = ExportDialog(self)
+        if not dialog.exec() or dialog.action is None:
+            return
+        mode, value = dialog.action
+        if mode == "one":
+            self.export_results(value, checked=True)
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Choose a folder for the exported files")
+        if not folder:
+            return
+        try:
+            written = export_all(self.config, self.result_records, folder, value)
+        except Exception as exc:
+            alert(self, "Export failed", str(exc), "bad")
+            return
+        if confirm(self, "Export complete", f"Saved {len(written)} file{'s' if len(written) != 1 else ''} to <b>{folder}</b>.",
+                   "Open folder", "Close"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _exports_allowed(self) -> bool:
         if not self.config or not self.result_records:
             alert(self, "No results yet", "Scan a batch of sheets first.")
-            return
+            return False
         if self.batch_id is not None:
             status = self.repo.batch_status(self.batch_id)
             if status["status"] != "complete":
                 alert(self, "This batch is incomplete",
                       f"It processed {status['processed_pages']} of {status['expected_pages']} expected pages, with "
                       f"{status['error_count']} file or page errors. Scan a clean batch before exporting official results.", "warn")
-                return
+                return False
         unresolved = sum(bool(record.get("review_required")) for record in self.result_records)
         if unresolved:
             if confirm(self, "Review needed before exporting",
                        f"{unresolved} sheet{'s' if unresolved != 1 else ''} still {'have' if unresolved != 1 else 'has'} unclear marks "
                        f"or roll numbers. Official results can only be exported once they are checked.", "Go to Review", "Close"):
                 self.show_page("review")
+            return False
+        return True
+
+    def export_results(self, kind: str, checked: bool = False):
+        if not checked and not self._exports_allowed():
             return
-        filters = {"csv": ("CSV (*.csv)", "marklist.csv"), "xlsx": ("Excel workbook (*.xlsx)", "marklist.xlsx"), "pdf": ("PDF report (*.pdf)", "results.pdf"),
-                   "cards": ("PDF scorecards (*.pdf)", "student-scorecards.pdf"), "item": ("CSV (*.csv)", "item-analysis.csv"),
-                   "topic": ("CSV (*.csv)", "topic-analysis.csv"), "subject": ("CSV (*.csv)", "subject-analysis.csv")}
-        filter_text, name = filters[kind]
+        name = EXPORTS[kind][2]
+        filter_text = {"xlsx": "Excel workbook (*.xlsx)", "pdf": "PDF (*.pdf)", "cards": "PDF (*.pdf)"}.get(kind, "CSV (*.csv)")
         path, _ = QFileDialog.getSaveFileName(self, "Export results", name, filter_text)
         if not path:
             return
         try:
-            function = {"csv": export_csv, "xlsx": export_xlsx, "pdf": export_report_pdf, "cards": export_student_scorecards_pdf,
-                        "item": export_item_analysis_csv, "topic": export_topic_analysis_csv, "subject": export_subject_analysis_csv}[kind]
-            function(self.config, self.result_records, path)
+            export_function(kind)(self.config, self.result_records, path)
             if confirm(self, "Export complete", f"Saved <b>{Path(path).name}</b>.", "Open file", "Close"):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         except Exception as exc:
@@ -1688,10 +1723,8 @@ class MainWindow(QMainWindow):
         self.scan_dpi_setting.setRange(150, 600)
         self.scan_dpi_setting.setSuffix(" DPI")
         self.scan_dpi_setting.setValue(int(self.repo.get_setting("scan_dpi", "216")))
-        self.scan_color_setting = combo()
-        self.scan_color_setting.addItem("Grayscale", "grayscale")
-        self.scan_color_setting.addItem("Color", "color")
-        self.scan_color_setting.setCurrentIndex(max(0, self.scan_color_setting.findData(self.repo.get_setting("scan_color_mode", "grayscale"))))
+        self.scan_color_setting = Segmented([("grayscale", "Grayscale"), ("color", "Colour")])
+        self.scan_color_setting.set_current(self.repo.get_setting("scan_color_mode", "grayscale"))
         scan_form = form()
         scan_form.addRow("PDF rendering quality", self.scan_dpi_setting)
         scan_form.addRow("Scan colour mode", self.scan_color_setting)
@@ -1715,8 +1748,7 @@ class MainWindow(QMainWindow):
         for control in (self.scan_dpi_setting, self.default_correct_setting, self.default_incorrect_setting, self.default_blank_setting):
             control.setMaximumWidth(180)
             control.valueChanged.connect(lambda _value: self.save_settings(quiet=True))
-        self.scan_color_setting.setMaximumWidth(180)
-        self.scan_color_setting.currentIndexChanged.connect(lambda _index: self.save_settings(quiet=True))
+        self.scan_color_setting.changed.connect(lambda _key: self.save_settings(quiet=True))
 
         brand_card, bl = section("Institute", "QualifyIAS is printed by default. Add a PNG or JPG logo to replace the built-in wordmark.")
         self.institute_setting = QLineEdit(self.repo.get_setting("institute_name", "QualifyIAS"))
@@ -1771,7 +1803,7 @@ class MainWindow(QMainWindow):
     def save_settings(self, quiet: bool = False):
         values = {
             "scan_dpi": str(self.scan_dpi_setting.value()),
-            "scan_color_mode": str(self.scan_color_setting.currentData()),
+            "scan_color_mode": self.scan_color_setting.current() or "grayscale",
             "default_correct_points": str(self.default_correct_setting.value()),
             "default_incorrect_points": str(self.default_incorrect_setting.value()),
             "default_blank_points": str(self.default_blank_setting.value()),

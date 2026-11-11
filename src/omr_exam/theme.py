@@ -27,8 +27,8 @@ TEXT = "#1D2420"
 TEXT_2 = "#3A433E"
 MUTED = "#656E68"
 FAINT = "#979F99"
-FIELD_BORDER = "#89978F"
-FIELD_HOVER = "#5F7468"
+FIELD_BORDER = "#CBC5B3"
+FIELD_HOVER = "#8FB0A6"
 
 SIDEBAR = "#16201D"
 SIDEBAR_HOVER = "#202C28"
@@ -108,7 +108,7 @@ QPushButton#nav:disabled {{ color: #6C7B75; background: transparent; }}
     padding: 0 5px; font-size: 12px; font-weight: 600; color: {TEXT_2}; }}
 
 /* ---- surfaces ---- */
-QFrame#card {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#card {{ background: {CARD}; border: 1px solid #E6E1D3; border-radius: 12px; }}
 QFrame#inset {{ background: {SUBTLE}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QFrame#divider {{ background: {BORDER}; max-height: 1px; min-height: 1px; border: none; }}
 #statValue {{ font-size: 26px; font-weight: 700; }}
@@ -130,7 +130,7 @@ QFrame#banner QLabel {{ background: transparent; border: none; }}
 #toast QLabel {{ color: white; font-weight: 600; }}
 
 /* ---- buttons ---- */
-QPushButton {{ background: {CARD}; border: 1px solid {BORDER_STRONG}; border-radius: 7px; padding: 7px 14px;
+QPushButton {{ background: {CARD}; border: 1px solid #D3CDBB; border-radius: 8px; padding: 7px 14px;
     font-weight: 600; color: {TEXT}; min-height: 20px; }}
 QPushButton:hover {{ background: {SUBTLE}; border-color: {FAINT}; }}
 QPushButton:pressed {{ background: #ECE8DD; }}
@@ -156,7 +156,7 @@ QPushButton#tool {{ padding: 6px; border-radius: 6px; background: transparent; b
 QPushButton#tool:hover {{ background: #ECE8DD; }}
 QPushButton#tool:checked {{ background: {ACCENT_SOFT}; border-color: {ACCENT_BORDER}; }}
 QPushButton#tool:focus {{ border: 2px solid {ACCENT}; padding: 5px; }}
-QPushButton#templateCard {{ background: {CARD}; border: 1px solid {BORDER_STRONG}; border-radius: 10px; padding: 12px 14px;
+QPushButton#templateCard {{ background: {CARD}; border: 1px solid #DAD4C3; border-radius: 12px; padding: 12px 14px;
     text-align: left; font-weight: 400; min-height: 50px; }}
 QPushButton#templateCard:hover {{ border-color: {ACCENT}; background: {SUBTLE}; }}
 QPushButton#templateCard:checked {{ border: 2px solid {ACCENT}; background: {ACCENT_SOFT}; padding: 11px 13px; }}
@@ -187,15 +187,20 @@ QPushButton#answerChip[state="edited"] {{ background: {ACCENT_SOFT}; border-colo
 
 /* ---- inputs ---- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox, QPlainTextEdit, QTextEdit {{
-    background: {CARD}; border: 1.4px solid {FIELD_BORDER}; border-radius: 8px; padding: 7px 10px; min-height: 20px;
+    background: {CARD}; border: 1px solid {FIELD_BORDER}; border-radius: 8px; padding: 8px 11px; min-height: 20px;
     selection-background-color: {ACCENT}; selection-color: white; }}
 QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover {{ border-color: {FIELD_HOVER}; }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{
-    border: 1.7px solid {ACCENT}; background: #FCFEFD; }}
+    border: 2px solid {ACCENT}; padding: 7px 10px; background: #FFFFFF; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ background: {SUBTLE}; color: {FAINT}; }}
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QDateEdit[invalid="true"] {{ border-color: {BAD}; background: #FEF6F4; }}
 QLineEdit#search {{ padding-left: 6px; }}
-QSpinBox, QDoubleSpinBox, QDateEdit {{ padding: 7px 26px 7px 10px; }}
+QLineEdit#cellEditor {{ border: 2px solid {ACCENT}; border-radius: 4px; padding: 0 4px; min-height: 0; font-weight: 700;
+    background: #FFFFFF; }}
+QPushButton#chip {{ background: {SUBTLE}; border: 1px solid {BORDER}; border-radius: 11px; padding: 1px 10px; min-height: 18px;
+    font-size: 12px; font-weight: 600; color: {TEXT_2}; }}
+QPushButton#chip:hover {{ background: {ACCENT_SOFT}; border-color: {ACCENT_BORDER}; color: {ACCENT_DARK}; }}
+QSpinBox, QDoubleSpinBox, QDateEdit {{ padding: 7px 26px 7px 11px; }}
 QAbstractSpinBox QLineEdit, QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; min-height: 0; }}
 QComboBox {{ padding-right: 28px; }}
 QComboBox::drop-down {{ border-left: 1px solid {FIELD_BORDER}; width: 30px; margin: 2px 2px 2px 0;

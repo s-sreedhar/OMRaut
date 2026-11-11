@@ -86,7 +86,7 @@ def test_new_test_and_answer_key_dialogs_support_single_paper_mode():
     dialog.subject.setText("Science")
     dialog.apply_template(TEMPLATES[0])
     dialog.use_sets.setChecked(False)
-    assert not dialog.set_codes.isEnabled()
+    assert not dialog.add_set_button.isEnabled()
     assert "one paper" in dialog.summary.text()
     dialog.attempt_accept()
     config = dialog.result_config
@@ -108,10 +108,10 @@ def test_new_test_set_codes_are_typed_and_final_set_cannot_be_removed(monkeypatc
 
     dialog = NewTestDialog(classes=["10A"], subjects=["Science"])
     dialog.title.setText("Quiz")
-    dialog.class_name.setCurrentText("10A")
-    dialog.subject.setCurrentText("Science")
-    assert dialog.class_name.findText("10A") >= 0
-    assert dialog.subject.findText("Science") >= 0
+    dialog.class_name.setText("10A")
+    dialog.subject.setText("Science")
+    assert [b.text() for b in dialog.class_name.findChildren(type(dialog.add_set_button), "chip")] == ["10A"]
+    assert [b.text() for b in dialog.subject.findChildren(type(dialog.add_set_button), "chip")] == ["Science"]
     assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "B"]
     dialog.add_set()
     assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "B", "C"]
@@ -180,7 +180,7 @@ def test_window_is_light_and_workflow_pages_work(tmp_path):
     keys = AnswerKeyDialog(window.config, window)
     keys.quick.setText("ABCDABCDABCDABCDABCDABCDA")
     for index in range(len(keys.codes)):
-        keys.set_picker.setCurrentIndex(index); keys.apply_quick(); keys.quick.setText("ABCDABCDABCDABCDABCDABCDA")
+        keys.set_picker.set_current(keys.codes[index]); keys.apply_quick(); keys.quick.setText("ABCDABCDABCDABCDABCDABCDA")
     keys.attempt_accept()
     window.repo.update_test_config_and_rescore(test_id, keys.result_config)
     window.refresh_tests(test_id)
@@ -359,3 +359,25 @@ def test_institute_name_and_logo_print_without_disturbing_the_reader(tmp_path):
     result = read_image(branded, config)
     assert result.roll_number == "000123" and result.set_code == "B" and not result.flags[:0]
     assert not any(flag["kind"] in ("unreadable", "invalid_id", "invalid_set") for flag in result.flags)
+
+
+def test_answer_key_cells_are_typed_not_picked():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
+    from omr_exam.dialogs import AnswerKeyDialog
+
+    app = QApplication.instance() or QApplication([])
+    config = build_from_template(TEMPLATES[0], title="Typed", class_name="A", subject="B")
+    keys = AnswerKeyDialog(config)
+    keys.show()
+    keys.table.setCurrentCell(0, 2)
+    keys.table.edit(keys.table.model().index(0, 2))
+    editor = keys.table.findChild(QLineEdit, "cellEditor")
+    assert editor is not None and not keys.table.findChildren(QComboBox)
+    editor.textEdited.emit("c")             # a complete answer is saved at once and the cursor moves down
+    app.processEvents()
+    assert keys.table.item(0, 2).text() == "C"
+    assert keys.table.currentRow() == 1
+    assert not keys.findChildren(QComboBox)
+    keys._changed = False
+    keys.close()

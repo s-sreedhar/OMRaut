@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from omr_exam import theme
 from omr_exam.layout import SheetLayout, create_layout
 from omr_exam.widgets import (QUEUE_BADGE, QUEUE_SUB, QUEUE_TITLE, QUEUE_TONE, Banner, EmptyState, Pill,
-                              QueueDelegate, Segmented, SheetViewer, alert, button, card, combo, divider, kbd,
+                              QueueDelegate, Segmented, SheetViewer, alert, button, card, divider, kbd,
                               label, table)
 
 COL_ROLL, COL_SET, COL_SCORE, COL_REVIEWED, COL_FLAGS, COL_IMAGE = range(6)
@@ -49,27 +49,40 @@ class _ChoiceDelegate(QStyledItemDelegate):
         self.max_length = max_length
 
     def createEditor(self, parent, _option, _index):
-        editor = combo()
-        editor.setEditable(self.editable)
-        editor.addItem("Blank" if not self.editable else "Choose or type…", "")
-        editor.addItems(self.values)
-        if self.editable:
-            editor.lineEdit().setMaxLength(self.max_length or 64)
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QRegularExpressionValidator
+        from PySide6.QtWidgets import QLineEdit
+
+        editor = QLineEdit(parent)
+        editor.setObjectName("cellEditor")
+        editor.setAlignment(Qt.AlignCenter)
+        if self.editable:                       # roll numbers: digits only
+            editor.setMaxLength(self.max_length or 64)
             if self.max_length:
-                editor.lineEdit().setValidator(QIntValidator(0, 10 ** self.max_length - 1, editor))
+                editor.setValidator(QIntValidator(0, 10 ** self.max_length - 1, editor))
+        else:                                   # answers / sets: only the test's own values
+            editor.setMaxLength(max((len(v) for v in self.values), default=1))
+            pattern = "|".join(QRegularExpression.escape(v) for v in self.values)
+            editor.setValidator(QRegularExpressionValidator(
+                QRegularExpression(f"(?:{pattern})?", QRegularExpression.CaseInsensitiveOption), editor))
+            editor.textEdited.connect(lambda text, e=editor: self._typed(e, text))
         return editor
 
+    def _typed(self, editor, text: str) -> None:
+        editor.setText(text.upper())
+        if text.upper() in {v.upper() for v in self.values}:       # complete value: save it, no Enter needed
+            self.commitData.emit(editor)
+            self.closeEditor.emit(editor, QStyledItemDelegate.NoHint)
+
     def setEditorData(self, editor, index):
-        value = index.data(Qt.EditRole) or ""
-        found = editor.findText(value)
-        if found < 0 and editor.isEditable():
-            editor.setCurrentText(value)
-        else:
-            editor.setCurrentIndex(max(0, found))
+        editor.setText(str(index.data(Qt.EditRole) or ""))
+        editor.selectAll()
 
     def setModelData(self, editor, model, index):
-        value = editor.currentText().strip()
-        model.setData(index, "" if value == "Blank" or value.startswith("Choose or type") else value, Qt.EditRole)
+        model.setData(index, editor.text().strip(), Qt.EditRole)
+
+    def updateEditorGeometry(self, editor, option, _index):
+        editor.setGeometry(option.rect)
 
 
 def flag_text(kind: str) -> str:
@@ -875,16 +888,12 @@ class ReviewPage(QWidget):
         self.roll_edit.setPlaceholderText(f"{digits}-digit roll number")
         self.roll_edit.setAccessibleName("Roll number")
         self.roll_edit.textEdited.connect(self._roll_edited)
-        self.set_combo = combo()
-        self.set_combo.setAccessibleName("Test set")
         codes = [str(code) for code in self.config["sheet"]["set_codes"]]
+        self.set_combo = Segmented([(code, code) for code in codes])
+        self.set_combo.setAccessibleName("Test set")
         current_set = self.table.item(row, COL_SET).text().strip().upper()
-        if current_set not in {code.upper() for code in codes}:
-            self.set_combo.addItem("Choose…", "")
-        for code in codes:
-            self.set_combo.addItem(f"Set {code}", code)
-        self.set_combo.setCurrentIndex(max(0, self.set_combo.findData(next((c for c in codes if c.upper() == current_set), ""))))
-        self.set_combo.currentIndexChanged.connect(self._set_changed)
+        self.set_combo.set_current(next((c for c in codes if c.upper() == current_set), ""))
+        self.set_combo.changed.connect(self._set_changed)
         form = QGridLayout()
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(4)
@@ -1049,11 +1058,11 @@ class ReviewPage(QWidget):
         self._update_identity_note()
         self._refresh_marks()
 
-    def _set_changed(self, _index: int) -> None:
+    def _set_changed(self, _key: str) -> None:
         if self._row < 0:
             return
         self._loading = True
-        self.table.item(self._row, COL_SET).setText(str(self.set_combo.currentData() or ""))
+        self.table.item(self._row, COL_SET).setText(self.set_combo.current())
         self._loading = False
         self._mark_dirty(self._row)
         self._refresh_marks()

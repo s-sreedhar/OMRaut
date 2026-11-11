@@ -635,7 +635,7 @@ def test_excel_workbook_includes_result_and_analysis_tabs(tmp_path):
 
     path = export_xlsx(config, records, tmp_path / "complete-results.xlsx")
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    assert workbook.sheetnames == ["Results", "Item analysis", "Topic analysis", "Subject analysis"]
+    assert workbook.sheetnames == ["Results", "Summary", "Class summary", "Distractors", "Item analysis", "Topic analysis", "Subject analysis", "Set comparison"]
     assert workbook["Results"]["F2"].value == 20
     assert workbook["Item analysis"]["A1"].value == "Question"
     assert workbook["Topic analysis"]["A1"].value == "Section"
@@ -781,3 +781,48 @@ def test_repository_enforces_sqlite_foreign_keys_on_every_connection(tmp_path):
         repository.create_batch(99999, "orphan")
     with pytest.raises(sqlite3.IntegrityError):
         repository.log_batch_event(99999, "ERROR", "Orphan batch log")
+
+
+def _sample_records(config):
+    return [
+        {"roll_number": "000001", "student_name": "A Student", "class_name": "10A", "set_code": "A",
+         "answers": {"1": "B", "2": "A", "3": "D", "4": "C", "5": "B"}, "flags": [], "review_required": False},
+        {"roll_number": "000002", "student_name": "B Student", "class_name": "10B", "set_code": "A",
+         "answers": {"1": "B", "2": "C", "3": None, "4": "C", "5": "A"}, "flags": [], "review_required": False},
+        {"roll_number": "000003", "student_name": "C Student", "class_name": "10B", "set_code": "A",
+         "answers": {"1": "A", "2": "C", "3": "A", "4": "A", "5": "A"}, "flags": [], "review_required": False},
+    ]
+
+
+def test_extended_analytics_and_export_all(tmp_path):
+    from omr_exam.reports import (EXPORTS, class_summary, distractor_analysis, export_all, max_score, score_bands,
+                                  summary_stats)
+
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    records = _sample_records(config)
+    ranked = class_results(config, records)
+    assert ranked[0]["percent"] is not None and ranked[0]["percentile"] > ranked[-1]["percentile"]
+    stats = summary_stats(config, records)
+    assert stats["students"] == 3 and stats["maximum"] == max_score(config)
+    assert stats["low"] <= stats["median"] <= stats["high"]
+    assert sum(count for _band, count in score_bands(config, records)) == 3
+    assert {row["class_name"] for row in class_summary(config, records)} == {"10A", "10B"}
+    first = distractor_analysis(config, records)[0]
+    assert first["question"] == 1 and first["option_B"] == 2 and first["top_wrong"] == "A"
+    written = export_all(config, records, tmp_path / "all")
+    assert sorted(path.name for path in written) == sorted(name for _t, _d, name in EXPORTS.values())
+    assert all(path.stat().st_size > 0 for path in written)
+    partial = export_all(config, records, tmp_path / "some", ["csv", "item"])
+    assert [path.name for path in partial] == ["marklist.csv", "item-analysis.csv"]
+
+
+def test_sample_answer_key_files_import_back(tmp_path):
+    from omr_exam.answer_keys import write_sample_key
+
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    xlsx = write_sample_key(config, tmp_path / "key.xlsx")
+    assert len(import_excel_key(xlsx, config)) == len(config["questions"])
+    payload = json.loads(write_sample_key(config, tmp_path / "key.json").read_text(encoding="utf-8"))
+    assert set(payload["sets"]) == set(config["sheet"]["set_codes"])
+    line = write_sample_key(config, tmp_path / "key.txt").read_text(encoding="utf-8").strip()
+    assert len(line) == len(config["questions"])

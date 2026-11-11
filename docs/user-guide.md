@@ -7,7 +7,7 @@ The sidebar follows the work in order: **Home**, then **Prepare** (Tests, Studen
 ## 1. Create a test and answer key
 
 1. Choose **New test** (top right, or **Tests**). Pick the template closest to your exam, name it, and optionally open **Customize questions, sets, and marking**.
-2. The answer-key editor opens. Type the whole key into **Type the whole key** (`ABCDABCD...` or `1-A 2-B ...`) and choose **Fill this set**, or click cells and type letters (the cursor moves down by itself). Other options: paste from a spreadsheet, import Excel or JSON, or read a filled-in master sheet.
+2. The answer-key editor opens. Type the whole key into **Type the whole key** (`ABCDABCD...` or `1-A 2-B ...`) and choose **Fill this set** (use the Set A / Set B switch to pick the set), or click a cell and type the letter: it is saved at once and the cursor moves down by itself. There are no drop-down lists to open. Other options: paste from a spreadsheet, import Excel or JSON, or read a filled-in master sheet. **Download a sample file to fill in** saves an example key (JSON, Excel or one-line text) for this test that you can edit and import back.
 3. Every question needs an answer in every set before sheets can be printed or scanned. If you are not ready, choose **Save as draft** and finish later; Home keeps reminding you.
 
 ## 2. Print answer sheets
@@ -40,7 +40,9 @@ Nothing unclear is ever guessed. Your corrections are **saved automatically as d
 
 ## 6. Results and exports
 
-**Results** shows the score distribution, hardest questions, a ranked student table, and every answer for the selected student. Exports (Excel marklist with analysis tabs, CSV, PDF report, scorecards, item/topic analysis) stay locked until every flagged sheet has been reviewed and the batch is complete. Re-saving an answer key re-scores stored sheets without rescanning.
+**Results** shows the headline figures (average, median, highest, lowest, pass rate), the score distribution with the standard deviation and the test's reliability (KR-20), a **Question analysis** table (hardest first, with discrimination and the most chosen wrong option), a ranked student table (score, percent, percentile) and every answer for the selected student.
+
+Choose **Export results** to open the export window. Save any single file with **Save as...**, or tick several and choose **Export selected to a folder** to write them all in one step. Available files: Excel workbook (marklist plus Summary, Class summary, Distractors, Item, Topic, Subject and, for multi-set tests, Set comparison sheets), marklist CSV, results report PDF, student scorecards PDF, and item, distractor, topic and subject analysis CSVs. Exports stay locked until every flagged sheet has been reviewed and the batch is complete. Re-saving an answer key re-scores stored sheets without rescanning.
 
 ## 7. Stability, backups and updates
 

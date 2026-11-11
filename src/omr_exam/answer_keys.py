@@ -167,3 +167,39 @@ def set_answer_key(config: dict[str, Any], set_code: str, answers: dict[str, str
     updated = json.loads(json.dumps(config))
     updated["sets"][code]["answer_key"] = valid
     return updated
+
+
+def write_sample_key(config: dict[str, Any], path: str | Path) -> Path:
+    """Write an example answer key for this test that the key dialog can import again.
+
+    The file type follows the extension: .json (all sets), .xlsx (Question / Answer columns) or
+    .txt (one line, the form typed into 'Type the whole key'). The answers are only placeholders.
+    """
+    import json
+
+    path = Path(path)
+    options = [str(o) for o in config["sheet"]["options"]]
+    ids = [str(q["id"]) for q in config["questions"]]
+    dropped = {str(q) for q in config.get("scoring", {}).get("dropped_questions", [])}
+    sample = {qid: options[index % len(options)] for index, qid in enumerate(ids) if qid not in dropped}
+    suffix = path.suffix.lower()
+    if suffix == ".xlsx":
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Answer key"
+        sheet.append(["Question", "Answer"])
+        for qid, answer in sample.items():
+            sheet.append([int(qid), answer])
+        sheet.column_dimensions["A"].width = 12
+        sheet.column_dimensions["B"].width = 12
+        workbook.save(path)
+    elif suffix == ".txt":
+        path.write_text("".join(sample.values()) + "\n", encoding="utf-8")
+    else:
+        payload = {"format": "omr-answer-keys-v1", "test_title": config["test"]["title"],
+                   "sets": {str(code): dict(sample) for code in config["sheet"]["set_codes"]},
+                   "topics": {qid: "" for qid in sample}}
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path

@@ -278,6 +278,14 @@ class Segmented(QFrame):
     def set_current(self, key: str) -> None:
         if key in self._buttons:
             self._buttons[key].setChecked(True)
+        elif not key:                        # nothing chosen yet
+            self._group.setExclusive(False)
+            for option in self._buttons.values():
+                option.setChecked(False)
+            self._group.setExclusive(True)
+
+    def keys(self) -> list[str]:
+        return list(self._buttons)
 
     def set_text(self, key: str, text: str) -> None:
         self._buttons[key].setText(text)
@@ -836,6 +844,94 @@ class SheetViewer(QGraphicsView):
             painter.setPen(QColor(theme.MUTED))
             painter.drawText(self.viewport().rect().adjusted(24, 24, -24, -24), Qt.AlignCenter | Qt.TextWordWrap, self._message)
             painter.restore()
+
+
+# ------------------------------------------------------------------ suggestion field and cell editor
+class SuggestField(QWidget):
+    """A text box with the most used values shown as one-click chips (replaces an editable drop-down)."""
+
+    textChanged = Signal(str)
+
+    def __init__(self, suggestions: Iterable[str] = (), placeholder: str = "", text: str = "", limit: int = 5,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QLineEdit
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(5)
+        self.edit = QLineEdit(text)
+        self.edit.setPlaceholderText(placeholder)
+        self.edit.textChanged.connect(self.textChanged)
+        outer.addWidget(self.edit)
+        values = sorted({s.strip() for s in suggestions if s and s.strip()}, key=str.casefold)[:limit]
+        if values:
+            row = QHBoxLayout()
+            row.setSpacing(5)
+            for value in values:
+                chip = QPushButton(value)
+                chip.setObjectName("chip")
+                chip.setCursor(Qt.PointingHandCursor)
+                chip.setToolTip(f"Use {value}")
+                chip.clicked.connect(lambda _c=False, v=value: (self.edit.setText(v), self.edit.setFocus()))
+                row.addWidget(chip)
+            row.addStretch(1)
+            outer.addLayout(row)
+
+    def text(self) -> str:
+        return self.edit.text()
+
+    def setText(self, value: str) -> None:
+        self.edit.setText(value)
+
+    def setPlaceholderText(self, value: str) -> None:
+        self.edit.setPlaceholderText(value)
+
+    def setFocus(self, *args) -> None:  # noqa: N802
+        self.edit.setFocus(*args)
+
+
+class ChoiceDelegate(TintDelegate):
+    """In-cell editor for a short fixed set of values: a plain box that only accepts those values.
+
+    Typing replaces the cell's content, so a whole answer key can be entered from the keyboard
+    without any pop-up list getting in the way.
+    """
+
+    def __init__(self, values: Iterable[str], parent=None, *, blank_hint: str = ""):
+        super().__init__(parent)
+        self.values = [str(v).upper() for v in values]
+        self.blank_hint = blank_hint
+
+    def createEditor(self, parent, _option, _index):  # noqa: N802
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QRegularExpressionValidator
+        from PySide6.QtWidgets import QLineEdit
+
+        editor = QLineEdit(parent)
+        editor.setAlignment(Qt.AlignCenter)
+        editor.setMaxLength(max((len(v) for v in self.values), default=1))
+        pattern = "|".join(QRegularExpression.escape(v) for v in self.values)
+        editor.setValidator(QRegularExpressionValidator(QRegularExpression(f"(?:{pattern})?", QRegularExpression.CaseInsensitiveOption), editor))
+        editor.setObjectName("cellEditor")
+        editor.textEdited.connect(lambda text, e=editor: self._typed(e, text))
+        return editor
+
+    def _typed(self, editor, text: str) -> None:
+        editor.setText(text.upper())
+        if text.upper() in self.values:         # a complete answer: save it and move on, no Enter needed
+            self.commitData.emit(editor)
+            self.closeEditor.emit(editor, QStyledItemDelegate.NoHint)
+
+    def setEditorData(self, editor, index):  # noqa: N802
+        editor.setText(str(index.data(Qt.EditRole) or "").strip().upper())
+        editor.selectAll()
+
+    def setModelData(self, editor, model, index):  # noqa: N802
+        model.setData(index, editor.text().strip().upper(), Qt.EditRole)
+
+    def updateEditorGeometry(self, editor, option, _index):  # noqa: N802
+        editor.setGeometry(option.rect)
 
 
 # ------------------------------------------------------------------ custom dropdown

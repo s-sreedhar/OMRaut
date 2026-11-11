@@ -5,7 +5,7 @@ import csv
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from omr_exam.scoring import score_answers
 
@@ -45,7 +45,131 @@ def class_results(config: dict[str, Any], records: list[dict[str, Any]], set_cod
             current_rank = position
             previous_score = score
         row["rank"] = current_rank
+    maximum = max_score(config)
+    scored = [row["total"] for row in output if row.get("total") is not None]
+    for row in output:
+        total = row.get("total")
+        if total is None:
+            row["percent"], row["percentile"] = None, None
+            continue
+        row["percent"] = round(total / maximum * 100, 1) if maximum else None
+        below = sum(score < total for score in scored)
+        equal = sum(score == total for score in scored)
+        row["percentile"] = round((below + 0.5 * equal) / len(scored) * 100, 1)
     return output
+
+
+def max_score(config: dict[str, Any]) -> float:
+    """Highest total a student can earn: every counted question right, bonus questions worth one extra."""
+    rules = config["scoring"]
+    dropped = {str(q) for q in rules.get("dropped_questions", [])}
+    bonus = {str(q) for q in rules.get("bonus_questions", [])}
+    return sum(float(rules["correct"]) + (1.0 if str(q["id"]) in bonus else 0.0)
+               for q in config["questions"] if str(q["id"]) not in dropped)
+
+
+def _eligible(config: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in class_results(config, records) if not row["review_required"] and row.get("total") is not None]
+
+
+def _stats(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"mean": None, "median": None, "stdev": None, "high": None, "low": None}
+    ordered = sorted(values)
+    n = len(ordered)
+    mean = sum(ordered) / n
+    median = ordered[n // 2] if n % 2 else (ordered[n // 2 - 1] + ordered[n // 2]) / 2
+    stdev = (sum((v - mean) ** 2 for v in ordered) / n) ** 0.5
+    return {"mean": round(mean, 2), "median": round(median, 2), "stdev": round(stdev, 2),
+            "high": ordered[-1], "low": ordered[0]}
+
+
+def summary_stats(config: dict[str, Any], records: list[dict[str, Any]], pass_percent: float = 40.0) -> dict[str, Any]:
+    """Whole-test figures: spread of scores, pass rate, and KR-20 reliability of the question set."""
+    rows = _eligible(config, records)
+    maximum = max_score(config)
+    result: dict[str, Any] = {"students": len(rows), "maximum": maximum, "pass_percent": pass_percent,
+                              **_stats([row["total"] for row in rows])}
+    result["mean_percent"] = round(result["mean"] / maximum * 100, 1) if rows and maximum else None
+    result["pass_rate"] = (round(sum((row["percent"] or 0) >= pass_percent for row in rows) / len(rows) * 100, 1)
+                           if rows else None)
+    reliability = None
+    if len(rows) > 1:
+        counted = [i for i, q in enumerate(rows[0]["questions"]) if q["status"] != "dropped"]
+        k = len(counted)
+        totals = [sum(row["questions"][i]["status"] == "correct" for i in counted) for row in rows]
+        mean = sum(totals) / len(totals)
+        variance = sum((t - mean) ** 2 for t in totals) / len(totals)
+        if k > 1 and variance > 0:
+            pq = 0.0
+            for i in counted:
+                p = sum(row["questions"][i]["status"] == "correct" for row in rows) / len(rows)
+                pq += p * (1 - p)
+            reliability = round(k / (k - 1) * (1 - pq / variance), 3)
+    result["reliability"] = reliability
+    return result
+
+
+def distractor_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """For each question, how many students chose each option, which wrong option attracted most, and blanks."""
+    rows = _eligible(config, records)
+    options = [str(o) for o in config["sheet"]["options"]]
+    single = len(config["sheet"]["set_codes"]) == 1
+    dropped = {str(q) for q in config["scoring"].get("dropped_questions", [])}
+    output = []
+    for question in config["questions"]:
+        qid = int(question["id"])
+        item = {"question": qid, "topic": question.get("topic", ""), "key": "", "blank": 0, "top_wrong": "",
+                "top_wrong_count": 0, "dropped": str(qid) in dropped, **{f"option_{o}": 0 for o in options}}
+        wrong: dict[str, int] = defaultdict(int)
+        if not item["dropped"]:
+            for row in rows:
+                entry = next((q for q in row["questions"] if q["question"] == qid), None)
+                if entry is None:
+                    continue
+                item["key"] = (entry.get("expected") or "") if single else "by set"
+                if entry["answer"] is None:
+                    item["blank"] += 1
+                    continue
+                item[f"option_{entry['answer']}"] = item.get(f"option_{entry['answer']}", 0) + 1
+                if entry["status"] != "correct":
+                    wrong[entry["answer"]] += 1
+        if wrong:
+            item["top_wrong"], item["top_wrong_count"] = max(sorted(wrong.items()), key=lambda pair: pair[1])
+        output.append(item)
+    return output
+
+
+def class_summary(config: dict[str, Any], records: list[dict[str, Any]], pass_percent: float = 40.0) -> list[dict[str, Any]]:
+    """Average, spread and pass rate for each class."""
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in _eligible(config, records):
+        groups[str(row.get("class_name") or "Unassigned")].append(row)
+    output = []
+    for name in sorted(groups, key=str.casefold):
+        members = groups[name]
+        output.append({"class_name": name, "students": len(members), **_stats([row["total"] for row in members]),
+                       "pass_rate": round(sum((row["percent"] or 0) >= pass_percent for row in members) / len(members) * 100, 1)})
+    return output
+
+
+def set_summary(config: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-paper comparison; only meaningful when the test has more than one set."""
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in _eligible(config, records):
+        groups[str(row.get("set_code"))].append(row)
+    return [{"set_code": code, "students": len(rows), **_stats([row["total"] for row in rows])}
+            for code, rows in sorted(groups.items())]
+
+
+def score_bands(config: dict[str, Any], records: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    """How many students fall in each ten-percent band of the maximum score."""
+    labels = [f"{low}-{low + 10}%" for low in range(0, 100, 10)]
+    counts = [0] * 10
+    for row in _eligible(config, records):
+        percent = max(0.0, min(100.0, row["percent"] or 0.0))
+        counts[min(9, int(percent // 10))] += 1
+    return list(zip(labels, counts))
 
 
 def item_analysis(config: dict[str, Any], records: list[dict[str, Any]], set_code: str | None = None) -> list[dict[str, Any]]:
@@ -91,7 +215,7 @@ def export_csv(config: dict[str, Any], records: list[dict[str, Any]], output: st
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     question_ids = [str(question["id"]) for question in config["questions"]]
-    columns = ["rank", "roll_number", "student_name", "class_name", "set_code", "total", "correct", "incorrect", "blank", "review_required", *[f"Q{qid}" for qid in question_ids]]
+    columns = ["rank", "roll_number", "student_name", "class_name", "set_code", "total", "percent", "percentile", "correct", "incorrect", "blank", "review_required", *[f"Q{qid}" for qid in question_ids]]
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
@@ -117,17 +241,42 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Results"
-    headers = ["Rank", "Roll number", "Name", "Class", "Set", "Score", "Correct", "Incorrect", "Blank", "Needs review"] + [f"Q{q['id']}" for q in config["questions"]]
+    headers = ["Rank", "Roll number", "Name", "Class", "Set", "Score", "Percent", "Percentile", "Correct", "Incorrect", "Blank", "Needs review"] + [f"Q{q['id']}" for q in config["questions"]]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="17324D")
     for row in rows:
-        sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No"] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
+        sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("percent"), row.get("percentile"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No"] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
 
+    options = [str(o) for o in config["sheet"]["options"]]
+    summary = summary_stats(config, records)
+    summary_sheet = workbook.create_sheet("Summary", 1)
+    summary_sheet.append(["Measure", "Value"])
+    for label_text, value in (("Test", config["test"]["title"]), ("Students scored", summary["students"]),
+                              ("Maximum score", summary["maximum"]), ("Average score", summary["mean"]),
+                              ("Average percent", summary["mean_percent"]), ("Median", summary["median"]),
+                              ("Standard deviation", summary["stdev"]), ("Highest", summary["high"]), ("Lowest", summary["low"]),
+                              (f"Pass rate (at {summary['pass_percent']:g}%)", summary["pass_rate"]),
+                              ("Reliability (KR-20)", summary["reliability"])):
+        summary_sheet.append([label_text, _safe_spreadsheet_text(value)])
+    summary_sheet.append([])
+    summary_sheet.append(["Score band", "Students"])
+    for band, count in score_bands(config, records):
+        summary_sheet.append([band, count])
+    for cell in summary_sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="17324D")
+    summary_sheet.column_dimensions["A"].width = 30
+    summary_sheet.column_dimensions["B"].width = 26
     analyses = (
+        ("Class summary", ["Class", "Students", "Average", "Median", "Std dev", "Highest", "Lowest", "Pass rate %"],
+         class_summary(config, records), ("class_name", "students", "mean", "median", "stdev", "high", "low", "pass_rate")),
+        ("Distractors", ["Question", "Topic", "Key", *options, "Blank", "Most chosen wrong", "Times chosen"],
+         [{**row, **{f"o_{o}": row.get(f"option_{o}") for o in options}} for row in distractor_analysis(config, records)],
+         ("question", "topic", "key", *[f"o_{o}" for o in options], "blank", "top_wrong", "top_wrong_count")),
         ("Item analysis", ["Question", "Topic", "Correct", "Attempted", "Difficulty", "Discrimination", "Dropped"],
          item_analysis(config, records),
          ("question", "topic", "correct_count", "attempted", "difficulty", "discrimination", "dropped")),
@@ -138,6 +287,9 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
          subject_analysis(config, records),
          ("subject", "question_count", "student_count", "average_points_per_student")),
     )
+    if len(config["sheet"]["set_codes"]) > 1:
+        analyses = (*analyses, ("Set comparison", ["Set", "Students", "Average", "Median", "Std dev", "Highest", "Lowest"],
+                                set_summary(config, records), ("set_code", "students", "mean", "median", "stdev", "high", "low")))
     for title, headers, data, keys in analyses:
         analysis_sheet = workbook.create_sheet(title)
         analysis_sheet.append(headers)
@@ -348,3 +500,45 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
         content.append(table)
     doc.build(content)
     return path
+
+
+def export_distractor_analysis_csv(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    _require_exportable(config, records)
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    options = [str(o) for o in config["sheet"]["options"]]
+    fields = ["question", "topic", "key", *[f"option_{o}" for o in options], "blank", "top_wrong", "top_wrong_count"]
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows({**row, "topic": _safe_spreadsheet_text(row.get("topic"))} for row in distractor_analysis(config, records))
+    return path
+
+
+#: Every export, in the order shown to the user: key -> (title, description, file name)
+EXPORTS: dict[str, tuple[str, str, str]] = {
+    "xlsx": ("Excel workbook", "Marklist plus summary, class and question analysis sheets", "marklist.xlsx"),
+    "csv": ("Marklist (CSV)", "Ranked scores and every answer, for any spreadsheet", "marklist.csv"),
+    "pdf": ("Results report (PDF)", "Printable ranked list with the question analysis", "results-report.pdf"),
+    "cards": ("Student scorecards (PDF)", "One page per student, question by question", "student-scorecards.pdf"),
+    "item": ("Item analysis (CSV)", "Difficulty and discrimination of each question", "item-analysis.csv"),
+    "distractor": ("Distractor analysis (CSV)", "How often each option was chosen, per question", "distractor-analysis.csv"),
+    "topic": ("Topic analysis (CSV)", "Average points per topic", "topic-analysis.csv"),
+    "subject": ("Subject analysis (CSV)", "Average points per subject", "subject-analysis.csv"),
+}
+
+
+def export_function(kind: str):
+    return {"xlsx": export_xlsx, "csv": export_csv, "pdf": export_report_pdf, "cards": export_student_scorecards_pdf,
+            "item": export_item_analysis_csv, "distractor": export_distractor_analysis_csv,
+            "topic": export_topic_analysis_csv, "subject": export_subject_analysis_csv}[kind]
+
+
+def export_all(config: dict[str, Any], records: list[dict[str, Any]], folder: str | Path,
+               kinds: Iterable[str] | None = None) -> list[Path]:
+    """Write several exports into one folder in a single step."""
+    _require_exportable(config, records)
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    return [export_function(kind)(config, records, folder / EXPORTS[kind][2])
+            for kind in (list(kinds) if kinds is not None else list(EXPORTS))]
