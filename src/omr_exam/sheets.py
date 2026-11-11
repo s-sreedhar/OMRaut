@@ -114,15 +114,28 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
         pdf.setFont("Helvetica-Bold", title_size)
         pdf.drawString(px, py, "OMR ANSWER SHEET")
         details = [institute_name, config["test"]["title"], config["test"]["class"],
-                   config["test"]["subject"], config["test"]["date"]]
+                   ", ".join(config["test"]["subjects"]), config["test"]["date"]]
         header_line("  |  ".join(details), 22.0, 7.5, "Helvetica")
 
         # Handwritten identity areas are deliberately not interpreted by the reader.
         for field, x, y in layout.identity_labels:
             if field in {"NAME", "CLASS"}:
                 text(field, x, y, 6.5)
-                width = (layout.width / 2 - x - 25) if field == "NAME" and "CLASS" in config["sheet"].get("fields", []) else layout.width - x - 23
-                box(x + 21, y - 5.0, width, 8.0, stroke=ACCENT_LINE, line_width=0.7)
+                box_x = x + 21.0
+                if field == "NAME" and "class" in config["sheet"].get("fields", []):
+                    class_label_x = layout.width / 2 + 18.0
+                    width = class_label_x - 7.0 - box_x
+                else:
+                    width = layout.width - 18.0 - box_x
+                box(box_x, y - 7.0, width, 12.0, stroke=ACCENT_LINE, line_width=0.9)
+                # The reference form asks candidates to print names in block
+                # letters. Internal guides keep handwriting aligned and legible.
+                cells = 22 if field == "NAME" else 8
+                pdf.setStrokeColor(ACCENT_LINE)
+                pdf.setLineWidth(0.3)
+                for cell in range(1, cells):
+                    px, py = xy(box_x + width * cell / cells, y - 7.0)
+                    pdf.line(px, py, px, py - 12.0 * MM)
             elif field == "ROLL NUMBER":
                 text(field, x, y, 6.5)
             elif field == "SET":
@@ -133,11 +146,13 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
         roll_x = 48.0
         roll_pitch = min(8.0, (layout.width - 18.0 - roll_x) / max(1, roll_digits))
         roll_right = roll_x + (roll_digits - 1) * roll_pitch + 5.0
-        box(17.5, 37.0, roll_right - 17.5, 51.5, stroke=ACCENT_LINE, line_width=0.7)
+        # End the roll-number panel above the set row; their outlines used to
+        # overlap even though the bubbles themselves were separate.
+        box(17.5, 37.0, roll_right - 17.5, 49.0, stroke=ACCENT_LINE, line_width=0.7)
         instruction_x = max(105.0, roll_right + 5.0)
         instruction_width = layout.width - 18.0 - instruction_x
         if instruction_width >= 45:
-            box(instruction_x, 37.0, instruction_width, 51.5, stroke=ACCENT_LINE, line_width=0.7)
+            box(instruction_x, 37.0, instruction_width, 49.0, stroke=ACCENT_LINE, line_width=0.7)
             box(instruction_x, 37.0, instruction_width, 7.5, stroke=ACCENT_LINE, fill=ACCENT_PALE, line_width=0.45)
             px, py = xy(instruction_x + 3, 42.3)
             pdf.setFillColor(ACCENT); pdf.setFont("Helvetica-Bold", 7)
@@ -148,7 +163,8 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
             for index, instruction in enumerate(instructions):
                 text(f"{index + 1}. {instruction}", instruction_x + 3, 49.0 + index * 6.0, 5.3)
         if len(config["sheet"]["set_codes"]) > 1:
-            box(17.5, 85.0, min(83.0, layout.width - 36.0), 12.5, stroke=ACCENT_LINE, line_width=0.7)
+            # Leave a visible gutter between roll digits, set bubbles, and Q1.
+            box(17.5, 87.0, min(83.0, layout.width - 36.0), 7.5, stroke=ACCENT_LINE, line_width=0.7)
         # Print the digit column headings (0-9) beside the roll number grid.
         for position in range(roll_digits):
             x = roll_x + position * roll_pitch

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from omr_exam import theme
 from omr_exam.layout import SheetLayout, create_layout
 from omr_exam.widgets import (QUEUE_BADGE, QUEUE_SUB, QUEUE_TITLE, QUEUE_TONE, Banner, EmptyState, Pill,
-                              QueueDelegate, Segmented, SheetViewer, alert, button, card, divider, kbd,
+                              QueueDelegate, Segmented, SheetViewer, alert, button, card, divider, grid_table, kbd,
                               label, table)
 
 COL_ROLL, COL_SET, COL_SCORE, COL_REVIEWED, COL_FLAGS, COL_IMAGE = range(6)
@@ -281,6 +281,8 @@ class ReviewPage(QWidget):
     def _build_sheet_view(self) -> QWidget:
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
+        workspace_splitter = QSplitter(Qt.Vertical)
+        workspace_splitter.setChildrenCollapsible(False)
 
         # -- queue
         queue_card, ql = card((0, 0, 0, 0), 0)
@@ -329,13 +331,13 @@ class ReviewPage(QWidget):
         self.zoom_label.setAlignment(Qt.AlignCenter)
         tools.addWidget(self.zoom_label)
         tools.addWidget(button("", lambda: self.viewer.zoom_by(1.25), "tool", "zoom-in", "Zoom in (+)"))
-        tools.addWidget(button("", self._fit_viewer, "tool", "fit", "Fit whole sheet (0)"))
+        tools.addWidget(button("", self._fit_viewer, "tool", "fit", "Fit sheet width and return to the top (0)"))
         self.viewer.zoomChanged.connect(lambda value: self.zoom_label.setText(f"{round(value * 100)}%"))
         vl.addLayout(tools)
         vl.addWidget(self.viewer, 1)
         legend = QHBoxLayout()
         legend.setSpacing(14)
-        self.viewer.setToolTip("Ctrl + scroll to zoom, drag to move, double-click to zoom in or fit")
+        self.viewer.setToolTip("Scroll vertically to inspect the full sheet. Drag to pan while zoomed; Ctrl + scroll or the zoom buttons to zoom. Double-click to fit the sheet width.")
         for colour, text in (("#16A34A", "Read answer"), ("#DC2626", "Needs your decision"), ("#2563EB", "Roll number and set")):
             dot = QLabel()
             dot.setFixedSize(12, 12)
@@ -347,7 +349,7 @@ class ReviewPage(QWidget):
             legend.addLayout(pair)
         legend.addStretch(1)
         vl.addLayout(legend)
-        splitter.addWidget(viewer_card)
+        workspace_splitter.addWidget(viewer_card)
 
         # -- inspector
         inspector_card, il = card((0, 0, 0, 0), 0)
@@ -390,13 +392,15 @@ class ReviewPage(QWidget):
         keys.setColumnStretch(3, 1)
         foot.addLayout(keys)
         il.addLayout(foot)
-        inspector_card.setMinimumWidth(340)
-        inspector_card.setMaximumWidth(440)
-        splitter.addWidget(inspector_card)
+        inspector_card.setMinimumWidth(0)
+        workspace_splitter.addWidget(inspector_card)
+        workspace_splitter.setStretchFactor(0, 1)
+        workspace_splitter.setStretchFactor(1, 1)
+        workspace_splitter.setSizes([440, 520])
+        splitter.addWidget(workspace_splitter)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([260, 620, 370])
+        splitter.setSizes([250, 1050])
         return splitter
 
     def _build_grid_view(self) -> QWidget:
@@ -413,7 +417,7 @@ class ReviewPage(QWidget):
         layout.addLayout(bar)
         split = QSplitter(Qt.Horizontal)
         split.setChildrenCollapsible(False)
-        self.table = table([], None, editable=True)
+        self.table = grid_table(table([], None, editable=True))
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.AnyKeyPressed)
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setShowGrid(True)
@@ -577,7 +581,7 @@ class ReviewPage(QWidget):
         bad, warn, plain = QBrush(QColor(theme.BAD_BG)), QBrush(QColor(theme.WARN_BG)), QBrush()
         was_loading, self._loading = self._loading, True
         cells = {COL_SCORE: f"{float(record['score']):g}", COL_FLAGS: flag_names,
-                 COL_IMAGE: Path(record["image_path"].split("#", 1)[0]).name.split("-", 1)[-1]}
+                 COL_IMAGE: Path(record["image_path"].split("#", 1)[0]).name}
         if reset_text:
             cells.update({COL_ROLL: record["roll_number"], COL_SET: record["set_code"]})
         for column, value in cells.items():
@@ -768,18 +772,25 @@ class ReviewPage(QWidget):
                    for column, qid in enumerate(self._questions(), FIRST_ANSWER_COLUMN)}
         roll = self.table.item(row, COL_ROLL).text().strip()
         set_code = self.table.item(row, COL_SET).text().strip().upper()
-        uncertain: dict[str, set[str]] = {}
+        uncertain: dict[str, dict[str, str]] = {}
         if record.get("review_required"):
             for flag in record["flags"]:
                 if flag.get("group") == "answer" and flag.get("kind") in ANSWER_ISSUES:
                     values = flag.get("values") or ([flag["value"]] if flag.get("value") else [])
-                    uncertain.setdefault(str(flag.get("question")), set()).update(str(v).upper() for v in values)
+                    question = uncertain.setdefault(str(flag.get("question")), {})
+                    if flag.get("kind") == "multiple":
+                        selected = flag.get("selected_values") or values
+                        weak = flag.get("weak_values") or []
+                        question.update({str(v).upper(): "bad" for v in selected})
+                        question.update({str(v).upper(): "warn" for v in weak})
+                    else:
+                        question.update({str(v).upper(): "warn" for v in values})
         marks = []
         for bubble in self._layout.bubbles:
             value = str(bubble.value).upper()
             if bubble.group == "answer":
-                if value in uncertain.get(bubble.index, set()) and answers.get(bubble.index) != value:
-                    tone = "bad"
+                if value in uncertain.get(bubble.index, {}):
+                    tone = uncertain[bubble.index][value]
                 elif answers.get(bubble.index) == value:
                     tone = "good"
                 else:
@@ -830,7 +841,7 @@ class ReviewPage(QWidget):
         record = self.records[row]
         image = self._pixmap(record)
         aligned = self._aligned(record)
-        self.sheet_title.setText(Path(record["image_path"].split("#", 1)[0]).name.split("-", 1)[-1]
+        self.sheet_title.setText(Path(record["image_path"].split("#", 1)[0]).name
                                  + (f" · page {record['image_path'].split('#page=', 1)[1]}" if "#page=" in record["image_path"] else ""))
         if image is None:
             self.viewer.clear("No scan preview is stored for this sheet.")
@@ -839,7 +850,7 @@ class ReviewPage(QWidget):
             if aligned:
                 self.viewer.set_marks(self._marks(row, image), self.marks_toggle.isChecked())
         self._build_inspector(row, image if aligned else None)
-        self.sheet_title.setText(Path(record["image_path"].split("#", 1)[0]).name.split("-", 1)[-1]
+        self.sheet_title.setText(Path(record["image_path"].split("#", 1)[0]).name
                                  + (f" · page {record['image_path'].split('#page=', 1)[1]}" if "#page=" in record["image_path"] else ""))
         for control in (self.prev_button, self.next_button, self.confirm_button):
             control.setEnabled(True)
@@ -926,9 +937,12 @@ class ReviewPage(QWidget):
             values = [str(v) for v in (flag.get("values") or [])]
             kind = flag.get("kind")
             description = {
-                "multiple": f"Marks found on {' and '.join(values)}. Choose the intended answer.",
-                "faint": f"A light mark was found on {', '.join(values)}. Decide whether it counts.",
-                "review": f"Read as {flag.get('value', '')}, but the mark is lighter than usual. Confirm it.",
+                "multiple": f"Filled marks detected on {' and '.join(values)}. Choose the intended answer.",
+                "faint": f"Light or partial mark detected on {', '.join(values)}. Decide whether it counts.",
+                "review": (f"Read as {flag.get('value', '')}; also check the light or partial mark on "
+                           f"{', '.join(value for value in values if value != flag.get('value'))}."
+                           if any(value != flag.get("value") for value in values)
+                           else f"Read as {flag.get('value', '')}, but the fill is light or partial. Confirm it."),
             }[kind]
             column = FIRST_ANSWER_COLUMN + questions.index(qid)
             current = self._option(self.table.item(row, column).text())
@@ -1172,7 +1186,7 @@ class ReviewPage(QWidget):
     def _collect(self, row: int) -> dict[str, Any]:
         """Validate one row of the edit buffer and return the update for the repository."""
         record = self.records[row]
-        name = Path(record["image_path"]).name.split("-", 1)[-1]
+        name = Path(record["image_path"].split("#", 1)[0]).name
         digits = int(self.config["sheet"]["roll_number_digits"])
         roll = self.table.item(row, COL_ROLL).text().strip()
         if len(roll) != digits or not roll.isdigit():
@@ -1268,7 +1282,7 @@ class ReviewPage(QWidget):
             for row, record in enumerate(self.records):
                 reviewed = self.table.item(row, COL_REVIEWED).checkState() == Qt.Checked
                 if record.get("review_required") and not reviewed:
-                    name = Path(record["image_path"]).name.split("-", 1)[-1]
+                    name = Path(record["image_path"].split("#", 1)[0]).name
                     raise ValueError(f"Inspect {name}, correct its marks, and tick 'Reviewed' before saving")
                 pending.append(self._collect(row))
             window.repo.update_results(pending, self.config)

@@ -484,10 +484,33 @@ class TintDelegate(QStyledItemDelegate):
     """Keeps per-cell background tints visible; a stylesheet on the table would otherwise hide them."""
 
     def paint(self, painter, option, index):
+        view = option.widget
+        grid = view is not None and bool(view.property("cellGrid"))
+        current = grid and view.currentIndex().isValid() and view.currentIndex() == index
+        if grid and not current and view.currentIndex().isValid() and view.currentIndex().row() == index.row():
+            painter.fillRect(option.rect.adjusted(0, 0, -1, -1), QColor(theme.ROW_ACTIVE))   # the row being worked on
         brush = index.data(Qt.BackgroundRole)
         if isinstance(brush, QBrush) and brush.style() != Qt.NoBrush:
             painter.fillRect(option.rect.adjusted(0, 0, -1, -1), brush)
         super().paint(painter, option, index)
+        if current:                                            # unmistakable cursor: thick ring around the active cell
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, False)
+            painter.setPen(QPen(QColor(theme.ACCENT), 3))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
+            painter.restore()
+
+
+def grid_table(widget: QTableWidget) -> QTableWidget:
+    """Spreadsheet look for tables people type into: visible cell borders, cell cursor, active row band."""
+    widget.setProperty("cellGrid", True)
+    widget.setObjectName("gridTable")
+    widget.setShowGrid(True)
+    widget.setSelectionBehavior(QAbstractItemView.SelectItems)
+    widget.setSelectionMode(QAbstractItemView.SingleSelection)
+    widget.currentCellChanged.connect(lambda *_a: widget.viewport().update())
+    return widget
 
 
 class PillDelegate(QStyledItemDelegate):
@@ -717,8 +740,11 @@ class SheetViewer(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setFrameShape(QFrame.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Fit mode fills the viewport width; horizontal travel appears only after
+        # zooming in, so pan gestures and the horizontal bar stay usable.
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setBackgroundBrush(QBrush(QColor("#E3DED1")))
         self.setMinimumSize(280, 240)
         self._pixmap_item = None
@@ -790,8 +816,20 @@ class SheetViewer(QGraphicsView):
         if self._pixmap_item is None:
             return
         self._fit_mode = True
-        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        self._fit_width()
         self.zoomChanged.emit(self.zoom())
+
+    def _fit_width(self) -> None:
+        """Scale to the available width and let the operator scroll down the full sheet."""
+        if self._pixmap_item is None or self.viewport().width() <= 0:
+            return
+        width = self._pixmap_item.boundingRect().width()
+        if width <= 0:
+            return
+        self.resetTransform()
+        scale = max(0.01, (self.viewport().width() - 12) / width)
+        self.scale(scale, scale)
+        self.horizontalScrollBar().setValue(0)
 
     def zoom_by(self, factor: float) -> None:
         if self._pixmap_item is None:
@@ -835,7 +873,7 @@ class SheetViewer(QGraphicsView):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         if self._fit_mode and self._pixmap_item is not None:
-            self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+            self._fit_width()
 
     def drawForeground(self, painter, rect):  # noqa: N802
         if self._pixmap_item is None and self._message:

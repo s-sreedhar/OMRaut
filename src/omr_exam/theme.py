@@ -23,6 +23,8 @@ CARD = "#FFFFFF"        # raised surface
 SUBTLE = "#FAF8F3"      # table headers, inset areas
 BORDER = "#E1DCCF"
 BORDER_STRONG = "#C3BCA9"
+GRID_LINE = "#BDB5A0"      # cell borders in spreadsheet-style tables
+ROW_ACTIVE = "#EAF4F1"     # band behind the row that holds the cursor
 TEXT = "#1D2420"
 TEXT_2 = "#3A433E"
 MUTED = "#656E68"
@@ -232,6 +234,9 @@ QTableWidget, QTableView {{ background: {CARD}; alternate-background-color: #FBF
     border-radius: 8px; gridline-color: #ECE8DD; selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT};
     outline: none; }}
 QTableWidget::item {{ padding: 6px 10px; border: none; }}
+QTableWidget#gridTable {{ gridline-color: {GRID_LINE}; border: 1px solid {BORDER_STRONG}; }}
+QTableWidget#gridTable::item:selected {{ background: transparent; color: {TEXT}; }}
+QTableWidget#gridTable:focus {{ border: 1px solid {ACCENT}; }}
 QTableWidget::item:selected {{ background: {ACCENT_SOFT}; color: {TEXT}; }}
 QTableWidget:focus {{ border: 1px solid {ACCENT}; }}
 QHeaderView {{ background: transparent; }}

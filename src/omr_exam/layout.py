@@ -35,8 +35,10 @@ def maximum_columns_for_options(width_mm: float, option_count: int, *, maximum: 
     """Return the widest supported question grid that fits the option bubbles."""
     if option_count < 2 or maximum < 1:
         return 0
-    option_start = 12.0 + (option_count - 1) * 5.5
-    required_width = option_start + 2.5 * (option_count - 1) + 22.0
+    # Keep a fixed gap for the question number, then place options on a compact
+    # 5.5 mm pitch. The former double reservation of 22 mm capped A-D sheets at
+    # three columns and prevented 160/180-question A4 exams.
+    required_width = 12.0 + (option_count - 1) * 5.5 + 1.5
     for columns in range(min(maximum, 4), 0, -1):
         column_width = (float(width_mm) - 36.0) / columns
         if required_width <= column_width:
@@ -72,8 +74,11 @@ def create_layout(config: dict[str, Any]) -> SheetLayout:
         raise ValueError("Questions do not fit on the page; reduce questions per column or increase page height")
     col_width = (width - 2 * margin) / cols
     options = list(map(str, sheet["options"]))
-    option_start = 12.0 + (len(options) - 1) * 5.5
-    if option_start + 2.5 * (len(options) - 1) > col_width - 22:
+    # Saved exams without a version use the original printed grid coordinates;
+    # newly created exams use compact coordinates to support four columns.
+    option_start = (12.0 if int(sheet.get("answer_grid_version", 1)) >= 2
+                    else 12.0 + (len(options) - 1) * 5.5)
+    if option_start + (len(options) - 1) * 5.5 + 1.5 > col_width:
         raise ValueError("Too many options for the configured number of sheet columns")
     bubbles: list[Bubble] = []
     qlabels: list[tuple[str, float, float]] = []

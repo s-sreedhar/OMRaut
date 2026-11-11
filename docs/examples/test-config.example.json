@@ -4,16 +4,25 @@
     "title": "Example Test",
     "date": "2026-11-11",
     "class": "10A",
-    "subject": "Science",
     "sections": [
       {
-        "title": "Science",
-        "subject": "Science",
+        "title": "Physics",
+        "subject": "Physics",
         "question_start": 1,
+        "question_end": 5
+      },
+      {
+        "title": "Chemistry",
+        "subject": "Chemistry",
+        "question_start": 6,
         "question_end": 10
       }
     ],
-    "institute": "QualifyIAS"
+    "institute": "QualifyIAS",
+    "subjects": [
+      "Physics",
+      "Chemistry"
+    ]
   },
   "sheet": {
     "width_mm": 210,
@@ -40,52 +49,52 @@
   "questions": [
     {
       "id": 1,
-      "section": "Science",
+      "section": "Physics",
       "topic": ""
     },
     {
       "id": 2,
-      "section": "Science",
+      "section": "Physics",
       "topic": ""
     },
     {
       "id": 3,
-      "section": "Science",
+      "section": "Physics",
       "topic": ""
     },
     {
       "id": 4,
-      "section": "Science",
+      "section": "Physics",
       "topic": ""
     },
     {
       "id": 5,
-      "section": "Science",
+      "section": "Physics",
       "topic": ""
     },
     {
       "id": 6,
-      "section": "Science",
+      "section": "Chemistry",
       "topic": ""
     },
     {
       "id": 7,
-      "section": "Science",
+      "section": "Chemistry",
       "topic": ""
     },
     {
       "id": 8,
-      "section": "Science",
+      "section": "Chemistry",
       "topic": ""
     },
     {
       "id": 9,
-      "section": "Science",
+      "section": "Chemistry",
       "topic": ""
     },
     {
       "id": 10,
-      "section": "Science",
+      "section": "Chemistry",
       "topic": ""
     }
   ],

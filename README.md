@@ -26,17 +26,18 @@ The reader corrects perspective and scan rotation from coded corner marks, class
 ## Importing your data
 
 - **Students and classes:** open **Students > More > Download example**, edit the CSV or JSON roster, then choose **Import roster**. Class names come from each student's `class_name`. Existing roll numbers are updated; invalid or duplicate rows stop the import. See [JSON import examples and details](docs/data-import.md).
-- **Tests:** choose **JSON example** to save a valid, editable test configuration, then use **Import exam file**. The expected fields and a ready-to-edit [sample JSON](docs/examples/test-config.example.json) are documented in [the JSON guide](docs/data-import.md). Export any saved test with **Export exam file**.
+- **Tests:** choose **JSON example** to save a valid, editable test configuration, then use **Import exam file**. Tests can include multiple subjects managed globally in Settings. The expected fields and a ready-to-edit [sample JSON](docs/examples/test-config.example.json) are documented in [the JSON guide](docs/data-import.md). Export any saved test with **Export exam file**.
 - **Keep editable copies:** use **Export exam JSON** for the full test, and **Export JSON** under More on Students for the roster.
 
 ## Current desktop workflow
 
 - **Home** shows the active test, the next step, and recent scan batches. The sidebar follows the work: Tests and Students, Scan sheets and Review, then Results.
 - Create a test from a template (or import JSON), then enter its answer key by typing, pasting, Excel/JSON import, or a filled-in master sheet. Incomplete keys can be saved as drafts.
+- Choose 160-question or 180-question four-column templates, or **Custom OMR** to set any printable count from 1 to the sheet capacity. A4 supports up to 180 A-D questions; print the pink, block-letter name fields at 100% scale.
 - Generate a print-ready PDF with orientation-coded registration marks; print at 100% scale.
 - Drag in any number of scan files and folders (images, multi-page TIFFs, PDFs), review the queue, then read them in the background with live progress and safe cancel.
 - Review only what is uncertain: the scan with the reader's marks overlaid next to a keyboard-driven inspector (or an all-answers grid). Nothing unclear is guessed, and corrections are saved automatically as drafts.
-- Results shows the score distribution, hardest questions and per-student detail; exports (Excel with analysis tabs, CSV, PDF, scorecards) unlock once every flagged sheet is reviewed.
+- Results shows the score distribution, hardest questions and per-student detail. Exports include ranked and subject-wise mark lists, candidate responses, individual assessment charts, section/topic reports, expanded item statistics, scorecards, and Excel/CSV analysis. Source scan names, PDF page numbers, and UTC import times are retained in results exports. Exports unlock once every flagged sheet is reviewed.
 - Reliability: daily automatic database copies, one-click backup/restore, recovery of interrupted batches, single-instance protection, and an error log with plain-language messages instead of crashes.
 - All dialogs, menus and messages are built into the app's own design; only the operating system's file pickers are used for choosing files.
 

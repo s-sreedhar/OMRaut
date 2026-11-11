@@ -20,7 +20,8 @@ from omr_exam import __version__, theme
 from omr_exam.answer_keys import validate_answer_key
 from omr_exam.config import load_config
 from omr_exam.database import Repository
-from omr_exam.dialogs import AnswerKeyDialog, BatchLogDialog, BatchPickerDialog, ExportDialog, NewTestDialog, StudentDialog
+from omr_exam.dialogs import (AnswerKeyDialog, BatchLogDialog, BatchPickerDialog, ExportDialog, NewTestDialog,
+                              ReferenceDataDialog, StudentDialog)
 from omr_exam.icons import icon, icon_size, pixmap
 from omr_exam.ingest import SUPPORTED_SCAN_SUFFIXES, count_scan_pages, scan_files_in_folder
 from omr_exam.reports import (EXPORTS, class_results, distractor_analysis, export_all, export_function, item_analysis,
@@ -568,7 +569,7 @@ class MainWindow(QMainWindow):
         split.setSpacing(14)
 
         list_card, ll = card((1, 4, 1, 6), 0)
-        self.tests_table = table(["Test", "Class", "Subject", "Questions", "Sets", "Answer key"], 0)
+        self.tests_table = table(["Test", "Class", "Subjects", "Questions", "Sets", "Answer key"], 0)
         self.tests_table.setFrameShape(QFrame.NoFrame)
         self.tests_table.setItemDelegateForColumn(5, PillDelegate(lambda text: _key_tone(text.split(" ")[0]), self.tests_table))
         self.tests_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Interactive)
@@ -660,7 +661,7 @@ class MainWindow(QMainWindow):
         for row, item in enumerate(tests):
             try:
                 config = self.repo.config_for_test(item["id"])
-                values = [item["title"], config["test"]["class"], config["test"]["subject"], str(len(config["questions"])),
+                values = [item["title"], config["test"]["class"], ", ".join(config["test"]["subjects"]), str(len(config["questions"])),
                           ", ".join(config["sheet"]["set_codes"]), self._key_status(config)[1]]
             except Exception:
                 values = [item["title"], "", "", "", "", "Unreadable"]
@@ -697,7 +698,7 @@ class MainWindow(QMainWindow):
             c = self.config
             scoring = c["scoring"]
             self.test_title_label.setText(c["test"]["title"])
-            self.test_info.setText(f"Class {c['test']['class']} · {c['test']['subject']}")
+            self.test_info.setText(f"Class {c['test']['class']} · {', '.join(c['test']['subjects'])}")
             self.fact_labels["questions"].setText(str(len(c["questions"])))
             self.fact_labels["options"].setText(", ".join(map(str, c["sheet"]["options"])))
             self.fact_labels["sets"].setText(", ".join(c["sheet"]["set_codes"]) if len(c["sheet"]["set_codes"]) > 1 else "One paper")
@@ -742,30 +743,27 @@ class MainWindow(QMainWindow):
             self.refresh_dashboard()
 
     def _known_classes(self) -> list[str]:
-        values = {str(student.get("class_name") or "").strip() for student in self.repo.students()}
-        for item in self.repo.tests():
-            try:
-                values.add(str(self.repo.config_for_test(item["id"])["test"]["class"]).strip())
-            except Exception:
-                continue
-        return sorted({value for value in values if value}, key=str.casefold)
+        return self.repo.reference_values("classes")
+
+    def manage_reference_data(self, *, subjects_only: bool = False) -> list[str] | None:
+        dialog = ReferenceDataDialog(self.repo, self)
+        if subjects_only:
+            dialog.lists["classes"].parentWidget().hide()
+        dialog.exec()
+        self.refresh_tests()
+        self.refresh_students()
+        if subjects_only:
+            return self.repo.reference_values("subjects")
+        return None
 
     def new_test(self):
         if self._scan_worker is not None:
             return
-        classes = set(self._known_classes())
-        subjects = set()
-        for item in self.repo.tests():
-            try:
-                existing_config = self.repo.config_for_test(item["id"])
-                existing_class = str(existing_config["test"]["class"]).strip()
-                if existing_class: classes.add(existing_class)
-                subject = str(existing_config["test"]["subject"]).strip()
-                if subject: subjects.add(subject)
-            except Exception:
-                continue
-        dialog = NewTestDialog(self, sorted(classes, key=str.casefold), sorted(subjects, key=str.casefold))
-        dialog.institute.setText(self.repo.get_setting("institute_name", ""))
+        classes = self._known_classes()
+        subjects = self.repo.reference_values("subjects")
+        dialog = NewTestDialog(self, classes, subjects,
+                               manage_subjects=lambda: self.manage_reference_data(subjects_only=True))
+        dialog.institute.setText(self.repo.get_setting("institute_name", "QualifyIAS"))
         if not dialog.exec():
             return
         try:
@@ -793,7 +791,7 @@ class MainWindow(QMainWindow):
 
     def download_test_json_example(self):
         config = build_from_template(
-            TEMPLATES[0], title="Example Test", class_name="10A", subject="Science",
+            TEMPLATES[0], title="Example Test", class_name="10A", subjects=["Physics", "Chemistry"],
             question_count=10, columns=1, set_codes=["A"], institute="QualifyIAS")
         path, _ = QFileDialog.getSaveFileName(self, "Save test JSON example", "test-config.json", "Test configuration (*.json)")
         if not path:
@@ -1687,10 +1685,14 @@ class MainWindow(QMainWindow):
         if not checked and not self._exports_allowed():
             return
         name = EXPORTS[kind][2]
-        filter_text = {"xlsx": "Excel workbook (*.xlsx)", "pdf": "PDF (*.pdf)", "cards": "PDF (*.pdf)"}.get(kind, "CSV (*.csv)")
+        extension = Path(name).suffix.lower()
+        filter_text = ("Excel workbook (*.xlsx)" if extension == ".xlsx" else
+                       "PDF (*.pdf)" if extension == ".pdf" else "CSV (*.csv)")
         path, _ = QFileDialog.getSaveFileName(self, "Export results", name, filter_text)
         if not path:
             return
+        if Path(path).suffix.lower() != extension:
+            path += extension
         try:
             export_function(kind)(self.config, self.result_records, path)
             if confirm(self, "Export complete", f"Saved <b>{Path(path).name}</b>.", "Open file", "Close"):
@@ -1749,6 +1751,13 @@ class MainWindow(QMainWindow):
             control.setMaximumWidth(180)
             control.valueChanged.connect(lambda _value: self.save_settings(quiet=True))
         self.scan_color_setting.changed.connect(lambda _key: self.save_settings(quiet=True))
+
+        references, ref_layout = section("Classes and subjects", "Manage reusable names for student records and tests. A test can use more than one subject.")
+        ref_row = QHBoxLayout()
+        ref_row.addWidget(button("Manage classes and subjects", self.manage_reference_data, "ghost", "settings"))
+        ref_row.addStretch(1)
+        ref_layout.addLayout(ref_row)
+        layout.addWidget(references)
 
         brand_card, bl = section("Institute", "QualifyIAS is printed by default. Add a PNG or JPG logo to replace the built-in wordmark.")
         self.institute_setting = QLineEdit(self.repo.get_setting("institute_name", "QualifyIAS"))

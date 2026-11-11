@@ -196,14 +196,22 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         decoded[group] = selected[0] if len(selected) == 1 else None
         kind = group.split(":", 1)[0]
         index = group.split(":", 1)[1]
+        weak_values = [key for key, _ in weak]
         if len(selected) > 1:
-            flags.append({"kind": "multiple", "group": kind, "question": index, "values": selected})
+            flags.append({"kind": "multiple", "group": kind, "question": index,
+                          "values": [*selected, *weak_values], "selected_values": selected,
+                          "weak_values": weak_values})
         elif len(selected) == 0 and weak:
-            flags.append({"kind": "faint", "group": kind, "question": index, "values": [key for key, _ in weak], "darkness": max(value for _, value in weak)})
+            flags.append({"kind": "faint", "group": kind, "question": index,
+                          "values": weak_values, "weak_values": weak_values,
+                          "darkness": max(value for _, value in weak)})
         elif len(selected) == 0 and kind == "answer":
             flags.append({"kind": "blank", "question": index})
         elif len(selected) == 1 and (weak or selected[0] in ratios and ratios[selected[0]] < threshold + 0.08):
-            flags.append({"kind": "review", "group": kind, "question": index, "value": selected[0], "darkness": ratios[selected[0]]})
+            flags.append({"kind": "review", "group": kind, "question": index,
+                          "value": selected[0], "values": [selected[0], *weak_values],
+                          "selected_values": selected, "weak_values": weak_values,
+                          "darkness": ratios[selected[0]]})
     answers = {key.split(":", 1)[1]: value for key, value in decoded.items() if key.startswith("answer:")}
     roll = "".join(decoded.get(f"roll:{position}") or "?" for position in range(int(config["sheet"]["roll_number_digits"])))
     if "?" in roll:

@@ -22,7 +22,7 @@
         "title",
         "date",
         "class",
-        "subject"
+        "subjects"
       ],
       "additionalProperties": false,
       "properties": {
@@ -41,9 +41,14 @@
         "institute": {
           "type": "string"
         },
-        "subject": {
-          "type": "string",
-          "minLength": 1
+        "subjects": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "sections": {
           "type": "array",
@@ -148,6 +153,11 @@
         "corner_mark_size_mm": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "answer_grid_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
         }
       }
     },

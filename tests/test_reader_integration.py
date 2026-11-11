@@ -71,6 +71,33 @@ def test_generator_reader_corrects_180_degree_scan_rotation(tmp_path):
     assert result.set_code == "A"
 
 
+def test_four_column_180_question_sheet_reads_all_answers(tmp_path):
+    from omr_exam.templates import get_template, build_from_template
+
+    config = build_from_template(get_template("large180"), title="180 Reader QA", class_name="QA", subject="Science")
+    pdf = generate_sheet_pdf(config, tmp_path / "180-reader-qa.pdf")
+    document = fitz.open(pdf)
+    pix = document[0].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+    image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    layout = create_layout(config)
+    sx, sy = image.shape[1] / layout.width, image.shape[0] / layout.height
+    for bubble in layout.bubbles:
+        if bubble.group == "answer" and bubble.value == "A":
+            cv2.circle(image, (round(bubble.x * sx), round(bubble.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+    for position, digit in enumerate("123456"):
+        bubble = next(b for b in layout.bubbles if b.group == "roll" and b.index == str(position) and b.value == digit)
+        cv2.circle(image, (round(bubble.x * sx), round(bubble.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+    set_bubble = next(b for b in layout.bubbles if b.group == "set" and b.value == "A")
+    cv2.circle(image, (round(set_bubble.x * sx), round(set_bubble.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+    document.close()
+    result = read_image(image, config)
+    assert len(result.answers) == 180
+    assert set(result.answers.values()) == {"A"}
+    assert result.roll_number == "123456" and result.set_code == "A"
+    assert not result.requires_review
+
+
 @pytest.mark.parametrize("rotation", [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE])
 def test_generator_reader_corrects_quarter_turns(tmp_path, rotation):
     config, image = _filled_sheet(tmp_path)
@@ -101,6 +128,22 @@ def test_faint_partial_fill_is_flagged_for_review(tmp_path):
     result = read_image(image, config)
     assert result.answers["3"] is None
     assert any(flag["kind"] == "faint" and flag.get("question") == "3" for flag in result.flags)
+
+
+def test_partial_alternate_mark_is_recorded_with_a_confident_answer(tmp_path):
+    config, image = _filled_sheet(tmp_path)
+    layout = create_layout(config)
+    sx, sy = image.shape[1] / layout.width, image.shape[0] / layout.height
+    selected = next(b for b in layout.bubbles if b.group == "answer" and b.index == "3" and b.value == "B")
+    partial = next(b for b in layout.bubbles if b.group == "answer" and b.index == "3" and b.value == "D")
+    cv2.circle(image, (round(selected.x * sx), round(selected.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+    cv2.circle(image, (round(partial.x * sx), round(partial.y * sy)), round(0.60 * min(sx, sy)), (195, 195, 195), -1)
+    result = read_image(image, config)
+    issue = next(flag for flag in result.flags if flag.get("question") == "3")
+    assert result.answers["3"] == "B"
+    assert issue["kind"] == "review"
+    assert issue["value"] == "B" and "D" in issue["weak_values"]
+    assert result.requires_review
 
 
 def test_multipage_pdf_ingestion_renders_a_readable_sheet(tmp_path):

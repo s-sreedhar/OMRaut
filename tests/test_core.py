@@ -48,7 +48,7 @@ def test_test_builder_rejects_invalid_column_geometry_before_returning_config():
     base = {"title": "Geometry", "test_date": "2026-11-10", "class_name": "10A", "subject": "Math",
             "question_count": 4, "options": ["A", "B", "C", "D"], "roll_number_digits": 4,
             "set_codes": ["A"]}
-    for overrides in ({"columns": 0}, {"columns": 4}, {"columns": 1, "questions_per_column": 0},
+    for overrides in ({"columns": 0}, {"columns": 5}, {"columns": 1, "questions_per_column": 0},
                       {"columns": 1, "question_count": 50}):
         with pytest.raises(ValueError):
             create_test_config(**{**base, **overrides})
@@ -67,8 +67,8 @@ def test_short_test_question_rows_remain_compact_on_the_printed_sheet():
 
 def test_sheet_builder_capacity_matches_printable_bubble_geometry():
     assert maximum_columns_for_options(210, 2) == 4
-    assert maximum_columns_for_options(210, 4) == 3
-    assert maximum_columns_for_options(210, 5) == 2
+    assert maximum_columns_for_options(210, 4) == 4
+    assert maximum_columns_for_options(210, 5) == 4
     assert maximum_questions_per_column(297) == 45
 
 
@@ -80,6 +80,16 @@ def test_test_builder_accepts_exact_capacity_and_rejects_one_more_row():
     assert len(at_capacity["questions"]) == 90
     with pytest.raises(ValueError, match="do not fit"):
         create_test_config(**base, question_count=91)
+
+
+def test_180_question_a4_layout_fits_four_answer_columns():
+    config = create_test_config(title="180 Questions", test_date="2026-11-11", class_name="10A", subject="Math",
+                                question_count=180, options=["A", "B", "C", "D"], roll_number_digits=6,
+                                set_codes=["A", "B"], columns=4)
+    layout = create_layout(config)
+    answer_bubbles = [bubble for bubble in layout.bubbles if bubble.group == "answer"]
+    assert len(answer_bubbles) == 720
+    assert max(bubble.x for bubble in answer_bubbles) + 1.5 <= layout.width - 18
 
 
 def test_config_rejects_case_colliding_reader_options_and_set_codes():
@@ -137,6 +147,7 @@ def test_config_rejects_question_section_labels_that_disagree_with_ranges():
         {"title": "Algebra", "subject": "Math", "question_start": 1, "question_end": 2},
         {"title": "Physics", "subject": "Science", "question_start": 3, "question_end": 5},
     ]
+    config["test"]["subjects"] = ["Math", "Science"]
     config["questions"][0]["section"] = "Physics"
     with pytest.raises(ValueError, match="section label must match"):
         validate_config(config)
@@ -609,6 +620,7 @@ def test_subject_analysis_matches_section_subject_hand_calculation(tmp_path):
         {"title": "Algebra", "subject": "Math", "question_start": 1, "question_end": 2},
         {"title": "Physics", "subject": "Science", "question_start": 3, "question_end": 5},
     ]
+    config["test"]["subjects"] = ["Math", "Science"]
     for question in config["questions"]:
         question["section"] = "Algebra" if int(question["id"]) <= 2 else "Physics"
     records = [
@@ -728,6 +740,30 @@ def test_csv_export_keeps_untrusted_student_text_literal(tmp_path):
     assert row["class_name"].startswith("'@")
 
 
+def test_result_exports_preserve_uploaded_filename_page_and_utc_timestamp(tmp_path):
+    from omr_exam.reports import source_file_details
+
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    record = {"roll_number": "000001", "student_name": "A Student", "class_name": "10A", "set_code": "A",
+              "answers": {"1": "B"}, "review_required": False,
+              "image_path": r"C:\Scans\Morning Batch-Student 01.pdf#page=3",
+              "uploaded_at": "2026-11-11 16:49:58", "processed_at": "2026-11-11 16:50:58"}
+    assert source_file_details(record) == ("Morning Batch-Student 01.pdf", "3", "2026-11-11 16:49:58")
+    output = export_csv(config, [record], tmp_path / "source-details.csv")
+    with output.open(newline="", encoding="utf-8-sig") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["source_file"] == "Morning Batch-Student 01.pdf"
+    assert row["page"] == "3" and row["imported_at_utc"] == "2026-11-11 16:49:58"
+    xlsx = pytest.importorskip("openpyxl")
+    workbook = xlsx.load_workbook(export_xlsx(config, [record], tmp_path / "source-details.xlsx"), read_only=True)
+    sheet = workbook["Results"]
+    columns = {cell.value: cell.column for cell in sheet[1]}
+    assert sheet.cell(2, columns["Source file"]).value == "Morning Batch-Student 01.pdf"
+    assert sheet.cell(2, columns["PDF page"]).value == "3"
+    assert sheet.cell(2, columns["Imported at (UTC)"]).value == "2026-11-11 16:49:58"
+    workbook.close()
+
+
 def test_existing_sqlite_database_is_migrated(tmp_path):
     path = tmp_path / "old.sqlite3"
     with sqlite3.connect(path) as db:
@@ -743,8 +779,8 @@ def test_existing_sqlite_database_is_migrated(tmp_path):
         columns = {row[1] for row in db.execute("PRAGMA table_info(results)")}
         version = db.execute("PRAGMA user_version").fetchone()[0]
         batch_columns = {row[1] for row in db.execute("PRAGMA table_info(batches)")}
-    assert {"preview_path", "thresholds_json", "marks_json", "flags_json", "processed_at"}.issubset(columns)
-    assert version == 6
+    assert {"preview_path", "thresholds_json", "marks_json", "flags_json", "processed_at", "uploaded_at"}.issubset(columns)
+    assert version == 7
     assert {"expected_pages", "processed_pages", "error_count", "status"}.issubset(batch_columns)
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 0

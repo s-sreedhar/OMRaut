@@ -17,6 +17,20 @@ except ImportError:  # Keep config loading usable in minimal/offline deployments
 SCHEMA_PATH = config_dir() / "test-config.schema.json"
 
 
+def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade the former single-subject field to the current multi-subject shape."""
+    test = config.get("test") if isinstance(config, dict) else None
+    if isinstance(test, dict):
+        if "subjects" not in test:
+            legacy = str(test.get("subject", "")).strip()
+            sections = test.get("sections", [])
+            inferred = [str(item.get("subject") or item.get("title") or "").strip()
+                        for item in sections if isinstance(item, dict)]
+            test["subjects"] = list(dict.fromkeys(value for value in (inferred or [legacy]) if value))
+        test.pop("subject", None)
+    return config
+
+
 def _reject_non_finite_numbers(value: Any, path: str = "$") -> None:
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError(f"Invalid test configuration: {path} must be finite")
@@ -29,6 +43,7 @@ def _reject_non_finite_numbers(value: Any, path: str = "$") -> None:
 
 
 def validate_config(config: dict[str, Any]) -> None:
+    normalize_config(config)
     _reject_non_finite_numbers(config)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     if Draft202012Validator is not None:
@@ -53,6 +68,10 @@ def validate_config(config: dict[str, Any]) -> None:
     if sorted(map(int, question_ids)) != list(range(1, len(question_ids) + 1)):
         raise ValueError("Question IDs must be consecutive and start at 1; they define printed bubble positions")
     sections = config["test"].get("sections", [])
+    subjects = config["test"]["subjects"]
+    normalized_subjects = {str(value).strip().casefold() for value in subjects}
+    if any(not str(value).strip() for value in subjects) or len(normalized_subjects) != len(subjects):
+        raise ValueError("Test subjects must be non-empty and unique")
     if sections:
         expected_start = 1
         section_for_question: dict[int, str] = {}
@@ -63,6 +82,9 @@ def validate_config(config: dict[str, Any]) -> None:
             title = str(section["title"]).strip()
             if not title:
                 raise ValueError("Test section titles must not be empty")
+            section_subject = str(section.get("subject") or title).strip()
+            if section_subject.casefold() not in normalized_subjects:
+                raise ValueError(f"Section {title} uses subject {section_subject}, which is not selected for this test")
             for question_id in range(start, end + 1):
                 section_for_question[question_id] = title
             expected_start = end + 1
@@ -105,9 +127,11 @@ def _validate_without_jsonschema(config: dict[str, Any]) -> None:
     if not required.issubset(config):
         raise ValueError(f"Invalid test configuration: missing {', '.join(sorted(required-set(config)))}")
     test, sheet, scoring = config["test"], config["sheet"], config["scoring"]
-    for key in ("title", "class", "subject", "date"):
+    for key in ("title", "class", "date"):
         if not isinstance(test.get(key), str) or not test[key].strip():
             raise ValueError(f"Invalid test configuration: test.{key} is required")
+    if not isinstance(test.get("subjects"), list) or not test["subjects"] or any(not isinstance(item, str) or not item.strip() for item in test["subjects"]):
+        raise ValueError("Invalid test configuration: test.subjects must contain at least one non-empty subject")
     try:
         date.fromisoformat(test["date"])
     except ValueError as exc:
@@ -132,6 +156,7 @@ def _validate_without_jsonschema(config: dict[str, Any]) -> None:
 
 def load_config(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    normalize_config(data)
     validate_config(data)
     return data
 

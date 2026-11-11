@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import re
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -57,6 +58,23 @@ def class_results(config: dict[str, Any], records: list[dict[str, Any]], set_cod
         equal = sum(score == total for score in scored)
         row["percentile"] = round((below + 0.5 * equal) / len(scored) * 100, 1)
     return output
+
+
+def source_file_details(record: dict[str, Any]) -> tuple[str, str, str]:
+    """Return the original uploaded basename, optional PDF page, and recorded import time."""
+    raw_path = str(record.get("image_path") or "")
+    source_path, marker, page_suffix = raw_path.partition("#page=")
+    source_path = source_path.split("#", 1)[0]
+    filename = os.path.basename(source_path) if source_path else "Not recorded"
+    page = page_suffix.split("#", 1)[0] if marker else ""
+    imported_at = str(record.get("uploaded_at") or record.get("processed_at") or "Not recorded")
+    return filename, page, imported_at
+
+
+def _source_line(record: dict[str, Any]) -> str:
+    filename, page, imported_at = source_file_details(record)
+    page_text = f" (PDF page {page})" if page else ""
+    return f"Uploaded file: {filename}{page_text}  |  Imported at (UTC): {imported_at}"
 
 
 def max_score(config: dict[str, Any]) -> float:
@@ -215,14 +233,15 @@ def export_csv(config: dict[str, Any], records: list[dict[str, Any]], output: st
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     question_ids = [str(question["id"]) for question in config["questions"]]
-    columns = ["rank", "roll_number", "student_name", "class_name", "set_code", "total", "percent", "percentile", "correct", "incorrect", "blank", "review_required", *[f"Q{qid}" for qid in question_ids]]
+    columns = ["rank", "roll_number", "student_name", "class_name", "set_code", "total", "percent", "percentile", "correct", "incorrect", "blank", "review_required", "source_file", "page", "imported_at_utc", *[f"Q{qid}" for qid in question_ids]]
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             output_row = dict(row)
+            output_row["source_file"], output_row["page"], output_row["imported_at_utc"] = source_file_details(row)
             output_row.update({f"Q{qid}": row["answers"].get(qid, "") or "" for qid in question_ids})
-            for field in ("roll_number", "student_name", "class_name", "set_code", *[f"Q{qid}" for qid in question_ids]):
+            for field in ("roll_number", "student_name", "class_name", "set_code", "source_file", *[f"Q{qid}" for qid in question_ids]):
                 output_row[field] = _safe_spreadsheet_text(output_row.get(field))
             writer.writerow(output_row)
     return path
@@ -241,13 +260,14 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Results"
-    headers = ["Rank", "Roll number", "Name", "Class", "Set", "Score", "Percent", "Percentile", "Correct", "Incorrect", "Blank", "Needs review"] + [f"Q{q['id']}" for q in config["questions"]]
+    headers = ["Rank", "Roll number", "Name", "Class", "Set", "Score", "Percent", "Percentile", "Correct", "Incorrect", "Blank", "Needs review", "Source file", "PDF page", "Imported at (UTC)"] + [f"Q{q['id']}" for q in config["questions"]]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="17324D")
     for row in rows:
-        sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("percent"), row.get("percentile"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No"] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
+        filename, page, imported_at = source_file_details(row)
+        sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("percent"), row.get("percentile"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No", _safe_spreadsheet_text(filename), page, imported_at] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
 
@@ -320,13 +340,17 @@ def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], out
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), title=f"{config['test']['title']} results")
-    data = [["Rank", "Roll", "Student", "Class", "Set", "Score", "Correct", "Wrong", "Blank", "Review"]]
-    data += [[row.get("rank"), row.get("roll_number"), row.get("student_name", ""), row.get("class_name", ""), row.get("set_code"), row.get("total"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No"] for row in rows]
-    table = Table(data, repeatRows=1)
+    _colors, styles = _pdf_styles()
+    data = [["Rank", "Roll", "Student", "Class", "Set", "Score", "Correct", "Wrong", "Blank", "Source file", "Imported at (UTC)"]]
+    for row in rows:
+        filename, _page, imported_at = source_file_details(row)
+        data.append([row.get("rank"), row.get("roll_number"), row.get("student_name", ""), row.get("class_name", ""),
+                     row.get("set_code"), row.get("total"), row.get("correct"), row.get("incorrect"), row.get("blank"),
+                     Paragraph(escape(filename), styles["ReportSmall"]), Paragraph(escape(imported_at), styles["ReportSmall"])])
+    table = Table(data, repeatRows=1, colWidths=[28, 50, 90, 42, 28, 42, 38, 38, 34, 145, 96])
     table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17324d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#aab5bf")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f8")]), ("FONTSIZE", (0, 0), (-1, -1), 8), ("PADDING", (0, 0), (-1, -1), 5)]))
-    styles = getSampleStyleSheet()
     content = [Paragraph(escape(config["test"]["title"]), styles["Title"]),
-               Paragraph(escape(f"{config['test']['class']} · {config['test']['subject']} · {config['test']['date']}"), styles["Normal"]),
+               Paragraph(escape(f"{config['test']['class']} · {', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
                Spacer(1, 12), table, PageBreak()]
 
     def add_analysis(title: str, headers: list[str], rows: list[list[Any]], widths: list[int]) -> None:
@@ -417,7 +441,8 @@ def subject_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> l
     eligible = [row for row in class_results(config, records)
                 if not row["review_required"] and row.get("total") is not None]
     sections = config["test"].get("sections", [])
-    subject_by_section = {str(section.get("title", "")): str(section.get("subject") or section.get("title") or config["test"]["subject"])
+    fallback_subject = (config["test"].get("subjects") or ["General"])[0]
+    subject_by_section = {str(section.get("title", "")): str(section.get("subject") or section.get("title") or fallback_subject)
                           for section in sections}
     subject_by_question: dict[str, str] = {}
     for question in config["questions"]:
@@ -426,9 +451,9 @@ def subject_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> l
         match = next((item for item in sections
                       if int(item["question_start"]) <= int(qid) <= int(item["question_end"])), None)
         if match:
-            subject = str(match.get("subject") or match.get("title") or config["test"]["subject"])
+            subject = str(match.get("subject") or match.get("title") or fallback_subject)
         else:
-            subject = subject_by_section.get(section_name, config["test"]["subject"])
+            subject = subject_by_section.get(section_name, fallback_subject)
         subject_by_question[qid] = subject
     question_ids_by_subject: dict[str, set[str]] = defaultdict(set)
     for qid, subject in subject_by_question.items():
@@ -481,8 +506,9 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
         name = row.get("student_name") or "Student"
         identity = f"{name} · Roll {row.get('roll_number', '')} · {row.get('class_name') or config['test']['class']}" + (f" · Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "")
         content.extend([Paragraph(escape(config["test"]["title"]), styles["Title"]),
-                        Paragraph(escape(f"{config['test']['subject']} · {config['test']['date']}"), styles["Normal"]),
+                        Paragraph(escape(f"{', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
                         Paragraph(escape(f"Score {row.get('total')} · Rank {row.get('rank')} · Correct {row.get('correct')} · Incorrect {row.get('incorrect')} · Blank {row.get('blank')}"), styles["Normal"]), Spacer(1, 12)])
+        content.append(Paragraph(escape(_source_line(row)), styles["Normal"]))
         table_rows = [[Paragraph(escape(identity), styles["Heading3"]), "", "", "", "", ""],
                       ["Q", "Section / topic", "Student", "Key", "Result", "Points"]]
         for item in row["questions"]:
@@ -498,6 +524,298 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
                                    ("FONTSIZE", (0, 0), (-1, -1), 7), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                                    ("PADDING", (0, 0), (-1, -1), 4)]))
         content.append(table)
+    doc.build(content)
+    return path
+
+
+def _subject_for_question(config: dict[str, Any]) -> dict[str, str]:
+    fallback = (config["test"].get("subjects") or ["General"])[0]
+    sections = config["test"].get("sections", [])
+    result: dict[str, str] = {}
+    for question in config["questions"]:
+        qid = str(question["id"])
+        section_name = str(question.get("section", ""))
+        match = next((section for section in sections
+                      if int(section["question_start"]) <= int(qid) <= int(section["question_end"])), None)
+        if match:
+            result[qid] = str(match.get("subject") or match.get("title") or fallback)
+        else:
+            result[qid] = str(next((section.get("subject") or section.get("title")
+                                    for section in sections if section.get("title") == section_name), fallback))
+    return result
+
+
+def _student_subject_scores(row: dict[str, Any], question_subject: dict[str, str]) -> dict[str, float]:
+    totals: dict[str, float] = defaultdict(float)
+    for answer in row.get("questions", []):
+        totals[question_subject.get(str(answer["question"]), "General")] += float(answer.get("points", 0))
+    return dict(totals)
+
+
+def _pdf_styles():
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="ReportSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7, leading=8))
+    styles.add(ParagraphStyle(name="ReportMuted", parent=styles["BodyText"], textColor=colors.HexColor("#526477"), fontSize=8, leading=10))
+    return colors, styles
+
+
+def _styled_table(data, widths=None, *, repeat=1, font_size=7):
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+
+    result = Table(data, colWidths=widths, repeatRows=repeat, hAlign="LEFT")
+    result.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17324D")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CFD8E3")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F6F9")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("PADDING", (0, 0), (-1, -1), 3.5),
+    ]))
+    return result
+
+
+def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    """Ranked mark list with per-subject scores, matching the supplied section-wise list."""
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from xml.sax.saxutils import escape
+
+    _require_exportable(config, records)
+    rows = class_results(config, records)
+    subjects = list(dict.fromkeys(_subject_for_question(config).values()))
+    subject_by_question = _subject_for_question(config)
+    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=22, rightMargin=22, topMargin=24, bottomMargin=24,
+                            title=f"{config['test']['title']} subject-wise mark list")
+    colors, styles = _pdf_styles()
+    content = [Paragraph("SUBJECT-WISE MARK LIST", styles["Title"]),
+               Paragraph(escape(f"{config['test']['title']}  |  {config['test']['class']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
+               Spacer(1, 10)]
+    headers = ["Rank", "Roll number", "Candidate name", "Uploaded file", "Imported at (UTC)", *subjects, "Total", "%"]
+    data = [headers]
+    for row in rows:
+        by_subject = _student_subject_scores(row, subject_by_question)
+        filename, _page, imported_at = source_file_details(row)
+        data.append([row.get("rank"), row.get("roll_number"), row.get("student_name") or "", *
+                     [filename, imported_at], *[round(by_subject.get(subject, 0), 2) for subject in subjects], row.get("total"), row.get("percent")])
+    first_widths = [34, 58, 118, 128, 92]
+    widths = first_widths + [max(46, min(64, 430 / max(1, len(subjects))))] * len(subjects) + [52, 42]
+    content.append(_styled_table(data, widths, repeat=1, font_size=7))
+    content.extend([Spacer(1, 8), Paragraph(escape(f"Students: {len(rows)}  |  Maximum score: {max_score(config):g}  |  Rank ties share the same rank."), styles["ReportMuted"])])
+    doc.build(content)
+    return path
+
+
+def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    """Per-candidate response analysis with topic, key, answer, result, and item rates."""
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from xml.sax.saxutils import escape
+
+    _require_exportable(config, records)
+    rows = class_results(config, records)
+    eligible = _eligible(config, records)
+    stats_by_set = {code: {item["question"]: item for item in item_analysis(config, records, code)}
+                    for code in config["sets"]}
+    question_meta = {int(question["id"]): question for question in config["questions"]}
+    q_subject = _subject_for_question(config)
+    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=22, bottomMargin=22,
+                            title=f"{config['test']['title']} candidate response analysis")
+    colors, styles = _pdf_styles()
+    content = []
+    for index, row in enumerate(rows):
+        if index:
+            content.append(PageBreak())
+        content.extend([Paragraph("QUESTION RESPONSE ANALYSIS", styles["Title"]),
+                        Paragraph(escape(f"{config['test']['title']}  |  {config['test']['date']}  |  {q_subject.get('1', ', '.join(config['test']['subjects']))}"), styles["Normal"]),
+                        Spacer(1, 5),
+                        Paragraph(escape(f"{row.get('student_name') or 'Student'}  |  Roll {row.get('roll_number')}  |  Class {row.get('class_name') or config['test']['class']}  |  Set {row.get('set_code')}"), styles["Heading3"]),
+                        Paragraph(escape(f"Score {row.get('total'):g}/{max_score(config):g} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%  |  Class average {summary_stats(config, records)['mean']}"), styles["ReportMuted"]),
+                        Spacer(1, 7)])
+        content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
+        headers = ["Q", "ATT%", "RIGHT%", "WRONG%", "SUBJECT", "TOPIC / SECTION", "KEY", "ANSWER", "RESULT", "MARKS"]
+        data = [headers]
+        status_counts = defaultdict(int)
+        for answer in row["questions"]:
+            qid = int(answer["question"]); meta = question_meta[qid]
+            rates = stats_by_set[row["set_code"]].get(qid, {})
+            denominator = max(1, len(eligible))
+            attempted = int(rates.get("attempted", 0)); correct = int(rates.get("correct_count", 0))
+            status_counts[answer["status"]] += 1
+            expected = config["sets"][row["set_code"]]["answer_key"].get(str(qid))
+            data.append([qid, f"{attempted / denominator:.0%}", f"{correct / denominator:.0%}",
+                         f"{max(0, attempted - correct) / denominator:.0%}", q_subject.get(str(qid), ""),
+                         " / ".join(filter(None, [str(meta.get("section", "")), str(meta.get("topic", ""))])),
+                         expected or "-", answer.get("answer") or "Blank",
+                         {"correct": "Correct", "incorrect": "Wrong", "blank": "Left", "dropped": "Dropped", "bonus": "Bonus"}.get(answer["status"], answer["status"]),
+                         answer.get("points", 0)])
+        widths = [24, 37, 44, 44, 74, 150, 32, 42, 48, 42]
+        content.append(_styled_table(data, widths, repeat=1, font_size=6.6))
+        subject_points = _student_subject_scores(row, q_subject)
+        subject_data = [["Subject", "Score"]] + [[subject, subject_points.get(subject, 0)] for subject in dict.fromkeys(q_subject.values())]
+        content.extend([Spacer(1, 7), _styled_table(subject_data, [180, 58], font_size=7),
+                        Spacer(1, 5), Paragraph(escape(f"Correct: {status_counts['correct']}  |  Wrong: {status_counts['incorrect']}  |  Left: {status_counts['blank']}  |  Total: {row.get('total'):g}"), styles["ReportMuted"])])
+    doc.build(content)
+    return path
+
+
+def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    """Per-candidate summary by section/topic, including question numbers by outcome."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from xml.sax.saxutils import escape
+
+    _require_exportable(config, records)
+    rows = class_results(config, records)
+    meta = {int(question["id"]): question for question in config["questions"]}
+    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(path), pagesize=A4, leftMargin=30, rightMargin=30, topMargin=28, bottomMargin=28,
+                            title=f"{config['test']['title']} sub-section report")
+    colors, styles = _pdf_styles()
+    content = []
+    for index, row in enumerate(rows):
+        if index:
+            content.append(PageBreak())
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for answer in row["questions"]:
+            question = meta[int(answer["question"])]
+            key = (str(question.get("section", "")), str(question.get("topic", "")))
+            group = groups.setdefault(key, {"questions": [], "correct": [], "wrong": [], "left": [], "points": 0.0})
+            group["questions"].append(str(answer["question"]))
+            outcome = "correct" if answer["status"] in {"correct", "bonus"} else "wrong" if answer["status"] == "incorrect" else "left"
+            group[outcome].append(str(answer["question"]))
+            group["points"] += float(answer.get("points", 0))
+        content.extend([Paragraph("SUB-SECTION PERFORMANCE", styles["Title"]),
+                        Paragraph(escape(f"{config['test']['title']}  |  {row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Rank {row.get('rank')}  |  Score {row.get('total')}"), styles["Normal"]), Spacer(1, 10)])
+        content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
+        data = [["Section", "Topic", "Qs", "Correct", "Wrong", "Unattempted", "Score"]]
+        for (section, topic), group in sorted(groups.items()):
+            data.append([section, topic or "-", len(group["questions"]), len(group["correct"]), len(group["wrong"]), len(group["left"]), round(group["points"], 2)])
+        content.append(_styled_table(data, [90, 115, 35, 50, 45, 68, 48], font_size=7))
+        content.extend([Spacer(1, 8), Paragraph("Question numbers by result", styles["Heading2"]), Spacer(1, 4)])
+        qdata = [["Section / topic", "Correct", "Wrong", "Unattempted"]]
+        for (section, topic), group in sorted(groups.items()):
+            qdata.append([f"{section} / {topic}".strip(" /"), ", ".join(group["correct"]) or "-",
+                          ", ".join(group["wrong"]) or "-", ", ".join(group["left"]) or "-"])
+        content.append(_styled_table(qdata, [100, 95, 95, 105], font_size=6.8))
+    doc.build(content)
+    return path
+
+
+def export_item_statistics_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    """Expanded test item report with score statistics, difficulty, discrimination, and distractors."""
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from xml.sax.saxutils import escape
+
+    _require_exportable(config, records)
+    rows = _eligible(config, records)
+    stats = summary_stats(config, records)
+    items = item_analysis(config, records)
+    distractors = {row["question"]: row for row in distractor_analysis(config, records)}
+    meta = {int(question["id"]): question for question in config["questions"]}
+    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=22, rightMargin=22, topMargin=24, bottomMargin=24,
+                            title=f"{config['test']['title']} expanded item statistics")
+    colors, styles = _pdf_styles()
+    score_summary = (f"Students {stats['students']}  |  Mean {stats['mean']}  |  Median {stats['median']}  |  SD {stats['stdev']}  |  "
+                     f"High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%  |  KR-20 {stats['reliability']}")
+    content = [Paragraph("TEST ITEM ANALYSIS", styles["Title"]),
+               Paragraph(escape(f"{config['test']['title']}  |  {', '.join(config['test']['subjects'])}  |  {config['test']['date']}"), styles["Normal"]),
+               Spacer(1, 6), Paragraph(escape(score_summary), styles["ReportMuted"]), Spacer(1, 10)]
+    headers = ["Q", "Section", "Topic", "Key", "Correct", "Attempted", "Difficulty", "Discrimination", *[f"{o} picks" for o in config["sheet"]["options"]], "Blank"]
+    data = [headers]
+    for item in items:
+        qid = int(item["question"]); topic = meta[qid]
+        distribution = distractors[qid]
+        expected = (config["sets"][next(iter(config["sets"]))]["answer_key"].get(str(qid))
+                    if len(config["sets"]) == 1 else None)
+        data.append([qid, topic.get("section", ""), topic.get("topic", ""), expected or "by set",
+                     item["correct_count"], item["attempted"], "-" if item["difficulty"] is None else f"{item['difficulty']:.0%}",
+                     "-" if item["discrimination"] is None else f"{item['discrimination']:+.0%}",
+                     *[distribution.get(f"option_{option}", 0) for option in config["sheet"]["options"]], distribution.get("blank", 0)])
+    available_width = 798
+    widths = [24, 80, 100, 42, 45, 48, 54, 66] + [min(42, max(32, available_width / (len(config["sheet"]["options"]) + 8))) for _ in config["sheet"]["options"]] + [38]
+    content.append(_styled_table(data, widths, font_size=6.7))
+    doc.build(content)
+    return path
+
+
+def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    """Individual summary pages with subject performance against class average and topper."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.colors import HexColor
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Flowable
+    from xml.sax.saxutils import escape
+
+    _require_exportable(config, records)
+    rows = class_results(config, records)
+    eligible = _eligible(config, records)
+    stats = summary_stats(config, records)
+    subject_map = _subject_for_question(config)
+    subjects = list(dict.fromkeys(subject_map.values()))
+    maxima = defaultdict(float)
+    for question in config["questions"]:
+        qid = str(question["id"])
+        if qid not in {str(item) for item in config["scoring"].get("dropped_questions", [])}:
+            maxima[subject_map[qid]] += float(config["scoring"]["correct"])
+
+    class_subjects = {row.get("roll_number"): _student_subject_scores(row, subject_map) for row in eligible}
+
+    class ComparisonBars(Flowable):
+        def __init__(self, student, width=520):
+            super().__init__(); self.student = student; self.width = width
+            self.height = max(58, len(subjects) * 54 + 22)
+
+        def draw(self):
+            canvas = self.canv
+            canvas.setFont("Helvetica", 8)
+            colors_ = {"student": "#087E73", "average": "#4C78A8", "topper": "#D08A22"}
+            y = self.height - 16
+            for subject in subjects:
+                values = [class_subjects.get(row.get("roll_number"), {}).get(subject, 0) for row in eligible]
+                average = sum(values) / len(values) if values else 0
+                top = max(values, default=0)
+                mine = self.student.get(subject, 0)
+                maximum = max(1.0, maxima.get(subject, 0))
+                canvas.setFillColorRGB(.12, .18, .25); canvas.drawString(0, y, subject[:24])
+                for offset, (label_, value, colour) in enumerate((("You", mine, colors_["student"]), ("Avg", average, colors_["average"]), ("Top", top, colors_["topper"]))):
+                    bar_y = y - 11 - offset * 11
+                    canvas.setFillColorRGB(.9, .92, .94); canvas.rect(92, bar_y, self.width - 140, 6, fill=1, stroke=0)
+                    canvas.setFillColor(HexColor(colour)); canvas.rect(92, bar_y, (self.width - 140) * max(0, value) / maximum, 6, fill=1, stroke=0)
+                    canvas.setFillColorRGB(.28, .34, .4); canvas.drawString(4, bar_y, label_)
+                    canvas.drawRightString(self.width, bar_y, f"{value:.2f} / {maximum:.2f}")
+                y -= 54
+
+    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(path), pagesize=A4, leftMargin=38, rightMargin=38, topMargin=30, bottomMargin=30,
+                            title=f"{config['test']['title']} assessment reports")
+    colors, styles = _pdf_styles()
+    content = []
+    for index, row in enumerate(rows):
+        if index:
+            content.append(PageBreak())
+        by_subject = _student_subject_scores(row, subject_map)
+        content.extend([Paragraph("TEST PERFORMANCE ANALYSIS", styles["Title"]),
+                        Paragraph(escape(f"{config['test']['title']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
+                        Spacer(1, 8), Paragraph(escape(f"{row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Class {row.get('class_name') or config['test']['class']}"), styles["Heading2"]),
+                        Paragraph(escape(f"Score {row.get('total')}/{max_score(config)} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%"), styles["Heading3"]),
+                        Paragraph(escape(f"Candidates {stats['students']}  |  Average {stats['mean']}  |  High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%"), styles["ReportMuted"]),
+                        Spacer(1, 10), Paragraph("Subject analysis: your score compared with the class average and highest score", styles["Heading2"]),
+                        ComparisonBars(by_subject), Spacer(1, 8)])
+        content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
+        table_data = [["Subject", "Your score", "Maximum", "Class average", "Top score"]]
+        for subject in subjects:
+            values = [class_subjects.get(candidate.get("roll_number"), {}).get(subject, 0) for candidate in eligible]
+            table_data.append([subject, round(by_subject.get(subject, 0), 2), round(maxima.get(subject, 0), 2),
+                               round(sum(values) / len(values), 2) if values else 0, round(max(values, default=0), 2)])
+        content.append(_styled_table(table_data, [130, 75, 65, 85, 75], font_size=7))
     doc.build(content)
     return path
 
@@ -520,7 +838,12 @@ EXPORTS: dict[str, tuple[str, str, str]] = {
     "xlsx": ("Excel workbook", "Marklist plus summary, class and question analysis sheets", "marklist.xlsx"),
     "csv": ("Marklist (CSV)", "Ranked scores and every answer, for any spreadsheet", "marklist.csv"),
     "pdf": ("Results report (PDF)", "Printable ranked list with the question analysis", "results-report.pdf"),
+    "subject-list": ("Subject-wise mark list (PDF)", "Candidate ranks with scores for each subject", "subject-wise-mark-list.pdf"),
     "cards": ("Student scorecards (PDF)", "One page per student, question by question", "student-scorecards.pdf"),
+    "responses": ("Candidate response analysis (PDF)", "One question-by-question report per student", "candidate-response-analysis.pdf"),
+    "assessment": ("Assessment reports (PDF)", "Individual performance against class averages and toppers", "assessment-reports.pdf"),
+    "sections": ("Sub-section report (PDF)", "Each student’s correct, wrong, and unattempted questions by topic", "sub-section-report.pdf"),
+    "item-report": ("Expanded item statistics (PDF)", "Test statistics, item difficulty, discrimination, and option counts", "item-statistics.pdf"),
     "item": ("Item analysis (CSV)", "Difficulty and discrimination of each question", "item-analysis.csv"),
     "distractor": ("Distractor analysis (CSV)", "How often each option was chosen, per question", "distractor-analysis.csv"),
     "topic": ("Topic analysis (CSV)", "Average points per topic", "topic-analysis.csv"),
@@ -530,6 +853,9 @@ EXPORTS: dict[str, tuple[str, str, str]] = {
 
 def export_function(kind: str):
     return {"xlsx": export_xlsx, "csv": export_csv, "pdf": export_report_pdf, "cards": export_student_scorecards_pdf,
+            "subject-list": export_subject_score_list_pdf, "responses": export_candidate_response_pdf,
+            "assessment": export_assessment_pdf, "sections": export_subsection_pdf,
+            "item-report": export_item_statistics_pdf,
             "item": export_item_analysis_csv, "distractor": export_distractor_analysis_csv,
             "topic": export_topic_analysis_csv, "subject": export_subject_analysis_csv}[kind]
 

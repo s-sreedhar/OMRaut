@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS results (
  score REAL NOT NULL DEFAULT 0, review_required INTEGER NOT NULL DEFAULT 0, image_path TEXT NOT NULL DEFAULT '',
  preview_path TEXT NOT NULL DEFAULT '', thresholds_json TEXT NOT NULL DEFAULT '{}', marks_json TEXT NOT NULL DEFAULT '{}',
  flags_json TEXT NOT NULL DEFAULT '[]', processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(batch_id, image_path)
 );
 CREATE INDEX IF NOT EXISTS results_batch_roll ON results(batch_id, roll_number);
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS review_drafts (
  payload_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _roster_header(value: Any) -> str:
@@ -132,6 +133,9 @@ def initialize_database(path: str | Path) -> None:
         if "processed_at" not in columns:
             connection.execute("ALTER TABLE results ADD COLUMN processed_at TEXT NOT NULL DEFAULT ''")
             connection.execute("UPDATE results SET processed_at=CURRENT_TIMESTAMP WHERE processed_at=''")
+        if "uploaded_at" not in columns:
+            connection.execute("ALTER TABLE results ADD COLUMN uploaded_at TEXT NOT NULL DEFAULT ''")
+            connection.execute("UPDATE results SET uploaded_at=COALESCE(NULLIF(processed_at,''),CURRENT_TIMESTAMP) WHERE uploaded_at=''")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS results_batch_image ON results(batch_id,image_path)")
         connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -142,10 +146,138 @@ class Repository:
     def __init__(self, path: str | Path):
         self.path = str(path)
         initialize_database(path)
+        self._seed_reference_catalog()
+
+    @staticmethod
+    def _reference_setting(kind: str) -> str:
+        if kind not in {"classes", "subjects"}:
+            raise ValueError("Reference list must be classes or subjects")
+        return f"reference_{kind}"
+
+    @staticmethod
+    def _merge_reference_values(db: sqlite3.Connection, kind: str, values: list[str]) -> None:
+        key = Repository._reference_setting(kind)
+        row = db.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        existing = json.loads(row[0]) if row else []
+        by_case = {str(value).strip().casefold(): str(value).strip() for value in existing if str(value).strip()}
+        for value in values:
+            normalized = str(value).strip()
+            if normalized:
+                by_case.setdefault(normalized.casefold(), normalized)
+        ordered = sorted(by_case.values(), key=str.casefold)
+        db.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (key, json.dumps(ordered, ensure_ascii=False)))
+
+    def _seed_reference_catalog(self) -> None:
+        """Backfill reusable lists from saved roster and historical test configs once at startup."""
+        with _database_connection(self.path) as db:
+            ready = db.execute("SELECT value FROM app_settings WHERE key='reference_catalog_seeded'").fetchone()
+            if ready and ready[0] == "1":
+                return
+            classes = [row[0] for row in db.execute("SELECT DISTINCT class_name FROM students WHERE TRIM(class_name)<>''")]
+            test_rows = db.execute("SELECT config_json FROM tests").fetchall()
+            subjects: list[str] = []
+            for (raw_config,) in test_rows:
+                try:
+                    config = json.loads(raw_config)
+                    test = config.get("test", {})
+                    classes.append(test.get("class", ""))
+                    if test.get("subjects"):
+                        subjects.extend(test["subjects"])
+                    elif test.get("subject"):
+                        subjects.append(test["subject"])
+                    subjects.extend(section.get("subject") or section.get("title", "")
+                                    for section in test.get("sections", []) if isinstance(section, dict))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            if not classes and not subjects:
+                return
+            self._merge_reference_values(db, "classes", classes)
+            self._merge_reference_values(db, "subjects", subjects)
+            db.execute("INSERT INTO app_settings(key,value) VALUES ('reference_catalog_seeded','1') "
+                       "ON CONFLICT(key) DO UPDATE SET value='1'")
+
+    def reference_values(self, kind: str) -> list[str]:
+        key = self._reference_setting(kind)
+        try:
+            values = json.loads(self.get_setting(key, "[]"))
+        except json.JSONDecodeError:
+            values = []
+        return sorted({str(value).strip() for value in values if str(value).strip()}, key=str.casefold)
+
+    def add_reference_value(self, kind: str, value: str) -> list[str]:
+        value = value.strip()
+        if not value:
+            raise ValueError("Enter a name first")
+        values = self.reference_values(kind)
+        if any(existing.casefold() == value.casefold() for existing in values):
+            raise ValueError(f"{value} already exists")
+        with _database_connection(self.path) as db:
+            self._merge_reference_values(db, kind, [value])
+        return self.reference_values(kind)
+
+    def remember_reference_values(self, kind: str, values: list[str]) -> None:
+        with _database_connection(self.path) as db:
+            self._merge_reference_values(db, kind, values)
+
+    def rename_reference_value(self, kind: str, old: str, new: str) -> list[str]:
+        old, new = old.strip(), new.strip()
+        if not old or not new:
+            raise ValueError("A name is required")
+        values = self.reference_values(kind)
+        if not any(value.casefold() == old.casefold() for value in values):
+            raise ValueError(f"{old} was not found")
+        if any(value.casefold() == new.casefold() and value.casefold() != old.casefold() for value in values):
+            raise ValueError(f"{new} already exists")
+        with _database_connection(self.path) as db:
+            renamed = [new if value.casefold() == old.casefold() else value for value in values]
+            self._merge_reference_values(db, kind, [])
+            db.execute("UPDATE app_settings SET value=? WHERE key=?", (json.dumps(sorted(renamed, key=str.casefold), ensure_ascii=False), self._reference_setting(kind)))
+            db.row_factory = sqlite3.Row
+            rows = db.execute("SELECT id,config_json FROM tests").fetchall()
+            for row in rows:
+                try:
+                    config = json.loads(row["config_json"])
+                    from omr_exam.config import normalize_config
+                    normalize_config(config)
+                    test = config.get("test", {})
+                    if kind == "classes":
+                        if str(test.get("class", "")).casefold() == old.casefold():
+                            test["class"] = new
+                    else:
+                        test["subjects"] = [new if str(value).casefold() == old.casefold() else value for value in test.get("subjects", [])]
+                        for section in test.get("sections", []):
+                            if str(section.get("subject", "")).casefold() == old.casefold():
+                                section["subject"] = new
+                            if str(section.get("title", "")).casefold() == old.casefold():
+                                section["title"] = new
+                        for question in config.get("questions", []):
+                            if str(question.get("section", "")).casefold() == old.casefold():
+                                question["section"] = new
+                    db.execute("UPDATE tests SET config_json=? WHERE id=?", (json.dumps(config, ensure_ascii=False), row["id"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            if kind == "classes":
+                db.execute("UPDATE students SET class_name=? WHERE class_name=? COLLATE NOCASE", (new, old))
+        return self.reference_values(kind)
+
+    def delete_reference_value(self, kind: str, value: str) -> list[str]:
+        value = value.strip()
+        values = self.reference_values(kind)
+        remaining = [item for item in values if item.casefold() != value.casefold()]
+        if len(remaining) == len(values):
+            return values
+        with _database_connection(self.path) as db:
+            db.execute("UPDATE app_settings SET value=? WHERE key=?", (json.dumps(remaining, ensure_ascii=False), self._reference_setting(kind)))
+        return remaining
 
     def save_test(self, config: dict[str, Any]) -> int:
+        from omr_exam.config import normalize_config
+        normalize_config(config)
         with _database_connection(self.path) as db:
             cursor = db.execute("INSERT INTO tests(title,config_json) VALUES (?,?)", (config["test"]["title"], json.dumps(config, ensure_ascii=False)))
+            self._merge_reference_values(db, "classes", [config["test"].get("class", "")])
+            self._merge_reference_values(db, "subjects", list(config["test"].get("subjects", [])))
             return int(cursor.lastrowid)
 
     def get_setting(self, key: str, default: str = "") -> str:
@@ -215,7 +347,8 @@ class Repository:
             row = db.execute("SELECT config_json FROM tests WHERE id=?", (test_id,)).fetchone()
         if row is None:
             raise KeyError(f"Test {test_id} not found")
-        return json.loads(row[0])
+        from omr_exam.config import normalize_config
+        return normalize_config(json.loads(row[0]))
 
     def update_test_config(self, test_id: int, config: dict[str, Any]) -> None:
         self.update_test_config_and_rescore(test_id, config)
@@ -223,7 +356,8 @@ class Repository:
     def update_test_config_and_rescore(self, test_id: int, config: dict[str, Any]) -> int:
         """Save a new key/rules and all dependent scores as one transaction."""
         from omr_exam.scoring import score_answers
-        from omr_exam.config import validate_config
+        from omr_exam.config import normalize_config, validate_config
+        normalize_config(config)
         validate_config(config)
         new_json = json.dumps(config, ensure_ascii=False)
         with _database_connection(self.path) as db:
@@ -243,6 +377,8 @@ class Repository:
             db.execute("UPDATE tests SET title=?,config_json=? WHERE id=?",
                        (config["test"]["title"], new_json, test_id))
             db.executemany("UPDATE results SET score=? WHERE id=?", recalculated)
+            self._merge_reference_values(db, "classes", [config["test"].get("class", "")])
+            self._merge_reference_values(db, "subjects", list(config["test"].get("subjects", [])))
             return len(recalculated)
 
     def create_batch(self, test_id: int, source_folder: str, expected_pages: int = 0) -> int:
@@ -375,6 +511,7 @@ class Repository:
         with _database_connection(self.path) as db:
             db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name",
                        (roll_number, name.strip(), class_name.strip()))
+            self._merge_reference_values(db, "classes", [class_name])
 
     def delete_student(self, roll_number: str) -> None:
         with _database_connection(self.path) as db:
@@ -635,6 +772,7 @@ class Repository:
             raise ValueError("Student CSV did not contain any roll numbers")
         with _database_connection(self.path) as db:
             db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+        self.remember_reference_values("classes", [row[2] for row in rows])
         return len(rows)
 
     def import_students_json(self, path: str | Path) -> int:
@@ -665,6 +803,7 @@ class Repository:
             rows.append((roll, name, class_name))
         with _database_connection(self.path) as db:
             db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+        self.remember_reference_values("classes", [row[2] for row in rows])
         return len(rows)
 
     def import_students_excel(self, path: str | Path, *, sheet_name: str | None = None) -> int:
@@ -729,4 +868,5 @@ class Repository:
             raise ValueError("Student workbook did not contain any roll numbers")
         with _database_connection(self.path) as db:
             db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+        self.remember_reference_values("classes", [row[2] for row in rows])
         return len(rows)

@@ -18,6 +18,39 @@ def test_every_template_builds_and_fits_the_sheet(template):
     assert create_layout(config).bubbles  # layout validates capacity
 
 
+def test_large_and_custom_omr_templates_support_requested_question_counts():
+    counts = {template.key: template.question_count for template in TEMPLATES}
+    assert counts["large160"] == 160
+    assert counts["large180"] == 180
+    custom = next(template for template in TEMPLATES if template.key == "custom")
+    config = build_from_template(custom, title="Custom", class_name="C", subject="S",
+                                 question_count=137, columns=4)
+    assert len(config["questions"]) == 137
+    assert create_layout(config).question_columns == 4
+
+
+def test_new_test_dialog_has_160_180_and_custom_question_capacity():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    from omr_exam.dialogs import NewTestDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = NewTestDialog(subjects=["Science"])
+    assert {"large160", "large180", "custom"}.issubset(dialog.template_buttons)
+    templates = {template.key: template for template in TEMPLATES}
+    dialog.apply_template(templates["large160"])
+    assert dialog.question_count.value() == 160
+    dialog.apply_template(templates["large180"])
+    assert dialog.question_count.value() == 180 and dialog.question_count.maximum() == 180
+    dialog.apply_template(templates["custom"])
+    assert not dialog.customize.isHidden()
+    dialog.columns.setValue(4)
+    assert dialog.question_count.maximum() == 180
+    dialog.question_count.setValue(137)
+    assert dialog.question_count.value() == 137
+    dialog.close()
+
+
 def _config(count=6):
     return build_from_template(TEMPLATES[0], title="T", class_name="C", subject="S", question_count=count)
 
@@ -44,6 +77,31 @@ def test_student_crud(tmp_path):
     assert [s["roll_number"] for s in repo.students()] == ["000002"]
     with pytest.raises(ValueError):
         repo.save_student("", "x")
+
+
+def test_global_class_and_subject_catalogs_update_and_rename_saved_records(tmp_path):
+    repo = Repository(tmp_path / "db.sqlite3")
+    repo.save_student("000001", "Asha", "10A")
+    config = build_from_template(TEMPLATES[0], title="Mixed", class_name="10A", subjects=["Math", "Science"],
+                                 question_count=4, columns=1)
+    test_id = repo.save_test(config)
+    assert repo.reference_values("classes") == ["10A"]
+    assert repo.reference_values("subjects") == ["Math", "Science"]
+    saved = repo.config_for_test(test_id)
+    assert saved["test"]["subjects"] == ["Math", "Science"]
+    assert "subject" not in saved["test"]
+
+    repo.rename_reference_value("classes", "10A", "Grade 10")
+    repo.rename_reference_value("subjects", "Math", "Mathematics")
+    assert repo.students()[0]["class_name"] == "Grade 10"
+    renamed = repo.config_for_test(test_id)
+    assert renamed["test"]["class"] == "Grade 10"
+    assert renamed["test"]["subjects"] == ["Mathematics", "Science"]
+    assert renamed["test"]["sections"][0]["subject"] == "Mathematics"
+
+    repo.delete_reference_value("subjects", "Science")
+    assert repo.reference_values("subjects") == ["Mathematics"]
+    assert repo.config_for_test(test_id)["test"]["subjects"] == ["Mathematics", "Science"]
 
 
 def test_scan_drop_zone_accepts_local_files_and_respects_disabled_state():
@@ -83,7 +141,8 @@ def test_new_test_and_answer_key_dialogs_support_single_paper_mode():
     dialog = NewTestDialog()
     dialog.title.setText("Single paper")
     dialog.class_name.setText("QA")
-    dialog.subject.setText("Science")
+    dialog.subject_options = ["Science"]
+    dialog._populate_subjects(["Science"])
     dialog.apply_template(TEMPLATES[0])
     dialog.use_sets.setChecked(False)
     assert not dialog.add_set_button.isEnabled()
@@ -103,15 +162,16 @@ def test_new_test_and_answer_key_dialogs_support_single_paper_mode():
 
 def test_new_test_set_codes_are_typed_and_final_set_cannot_be_removed(monkeypatch):
     pytest.importorskip("PySide6")
+    from PySide6.QtCore import Qt
     from omr_exam import dialogs
     from omr_exam.dialogs import NewTestDialog
 
     dialog = NewTestDialog(classes=["10A"], subjects=["Science"])
     dialog.title.setText("Quiz")
     dialog.class_name.setText("10A")
-    dialog.subject.setText("Science")
+    dialog.subject_list.item(0).setCheckState(Qt.Checked)
     assert [b.text() for b in dialog.class_name.findChildren(type(dialog.add_set_button), "chip")] == ["10A"]
-    assert [b.text() for b in dialog.subject.findChildren(type(dialog.add_set_button), "chip")] == ["Science"]
+    assert dialog.selected_subjects() == ["Science"]
     assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "B"]
     dialog.add_set()
     assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "B", "C"]
@@ -123,6 +183,23 @@ def test_new_test_set_codes_are_typed_and_final_set_cannot_be_removed(monkeypatc
     assert not dialog.set_editors[0][1].isEnabled()
     dialog.use_sets.setChecked(False)
     assert dialog.config()["sheet"]["set_codes"] == ["A"]
+
+
+def test_new_test_supports_multiple_global_subjects():
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import Qt
+    from omr_exam.dialogs import NewTestDialog
+
+    dialog = NewTestDialog(subjects=["Mathematics", "Science"])
+    dialog.title.setText("Combined assessment")
+    dialog.class_name.setText("10A")
+    dialog.subject_list.item(0).setCheckState(Qt.Checked)
+    dialog.subject_list.item(1).setCheckState(Qt.Checked)
+    config = dialog.config()
+    assert config["test"]["subjects"] == ["Mathematics", "Science"]
+    assert "subject" not in config["test"]
+    assert {section["subject"] for section in config["test"]["sections"]} == {"Mathematics", "Science"}
+    dialog.close()
 
 
 def test_student_roster_json_import_is_validated_before_upsert(tmp_path):
@@ -150,6 +227,7 @@ def test_student_roster_json_import_is_validated_before_upsert(tmp_path):
 
 def test_window_is_light_and_workflow_pages_work(tmp_path):
     pytest.importorskip("PySide6")
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
     from omr_exam.dialogs import AnswerKeyDialog, NewTestDialog
     from omr_exam.theme import apply_light_theme
@@ -162,8 +240,9 @@ def test_window_is_light_and_workflow_pages_work(tmp_path):
     for key in window.page_index:
         window.show_page(key)
     # Template dialog produces a valid config.
-    dialog = NewTestDialog(window)
-    dialog.title.setText("Unit"); dialog.class_name.setText("9A"); dialog.subject.setText("Math")
+    dialog = NewTestDialog(window, subjects=["Math"])
+    dialog.title.setText("Unit"); dialog.class_name.setText("9A")
+    dialog.subject_list.item(0).setCheckState(Qt.Checked)
     dialog.apply_template(TEMPLATES[1])
     dialog.question_count.setValue(24)
     assert "24 questions" in dialog.summary.text()
@@ -288,6 +367,12 @@ def test_review_corrections_are_drafted_restored_and_confirmed(tmp_path):
     result_id = int(window.result_records[row]["id"])
     page.select_row(row)
     assert list(page._cards) == ["3"]                        # one uncertain mark to decide
+    image = page._pixmap(page.records[row])
+    assert sum(mark[3] == "bad" for mark in page._marks(row, image)) == 2
+    assert page._chips["3"].property("state") == "flagged"
+    from omr_exam.review import FIRST_ANSWER_COLUMN
+    from omr_exam import theme
+    assert page.table.item(row, FIRST_ANSWER_COLUMN + 2).background().color().name() == theme.BAD_BG.lower()
     page._cards["3"]._choose("C")
     assert window.repo.review_drafts(window.batch_id)[result_id]["answers"]["3"] == "C"   # saved without asking
     assert window.repo.results_for_batch(window.batch_id)[row]["answers"]["3"] is None    # official result untouched
@@ -307,6 +392,35 @@ def test_review_corrections_are_drafted_restored_and_confirmed(tmp_path):
     assert not reopened.repo.review_drafts(reopened.batch_id) and not page.has_unsaved()
     assert not reopened.review_badge.isVisibleTo(reopened)
     reopened.close()
+
+
+def test_sheet_viewer_supports_vertical_scan_scroll_and_zoomed_pan():
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QGraphicsView
+    from omr_exam.widgets import SheetViewer
+
+    app = QApplication.instance() or QApplication([])
+    viewer = SheetViewer()
+    assert viewer.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert viewer.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert viewer.dragMode() == QGraphicsView.ScrollHandDrag
+    viewer.close()
+
+
+def test_export_dialog_keeps_expanded_report_choices_in_a_vertical_scroll_area():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication, QScrollArea
+    from omr_exam.dialogs import ExportDialog
+    from omr_exam.reports import EXPORTS
+
+    app = QApplication.instance() or QApplication([])
+    dialog = ExportDialog(None)
+    scroll = dialog.findChild(QScrollArea)
+    assert scroll is not None and scroll.maximumHeight() <= 560
+    assert len(dialog.checks) == len(EXPORTS)
+    assert {"responses", "assessment", "sections", "item-report", "subject-list"}.issubset(dialog.checks)
+    dialog.close()
 
 
 def test_single_paper_scan_opens_in_review_without_set_mark_issue(tmp_path):

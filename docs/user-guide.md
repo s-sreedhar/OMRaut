@@ -14,7 +14,7 @@ The sidebar follows the work in order: **Home**, then **Prepare** (Tests, Studen
 
 Put your institute's name and logo on the sheets in **Settings > Institute** (both optional; the logo is a PNG or JPG, printed in black and white at the top right). A test can carry its own institute name from **New test > Customize**; the exam name is the test title. These sit in the header and never affect reading.
 
-In **Tests**, select the test and choose **Make sheet PDF**. Print at **100% scale** and keep all four corner squares on the page. Name and class are writing fields for people; the roll number bubbles are what the reader uses.
+In **Tests**, select the test and choose **Make sheet PDF**. Choose the 160- or 180-question template, or **Custom OMR** and set the count and columns to fit your exam. A4 supports up to 180 A-D questions in four columns. Print at **100% scale** and keep all four corner squares on the page. The name and class fields have block-letter guides for people; the roll number bubbles are what the reader uses.
 
 ## 3. Add students (optional but recommended)
 
@@ -30,7 +30,7 @@ Use a scanner setting of at least 150 DPI; a flat, well-lit photo also works. Re
 
 ## 5. Review uncertain sheets
 
-**Review** lists only the sheets that need a decision. For each one you see the scan with the reader's marks drawn on it, and a panel on the right with just the questions to decide (close-up of the bubbles included):
+**Review** lists only the sheets that need a decision. For each one you see the scan with the reader's marks drawn on it, and the question decisions below the image (close-up of the bubbles included). Scroll vertically through the sheet, drag to pan while zoomed, and use Ctrl+wheel or the zoom buttons to zoom:
 
 - Press **A-E** to choose an answer, **Space** for blank, **Up/Down** to move between marks, **Ctrl+Enter** to confirm the sheet and jump to the next.
 - Fix a wrong roll number or set at the top of the panel; unknown students can be added to the roster in one click.
@@ -42,7 +42,7 @@ Nothing unclear is ever guessed. Your corrections are **saved automatically as d
 
 **Results** shows the headline figures (average, median, highest, lowest, pass rate), the score distribution with the standard deviation and the test's reliability (KR-20), a **Question analysis** table (hardest first, with discrimination and the most chosen wrong option), a ranked student table (score, percent, percentile) and every answer for the selected student.
 
-Choose **Export results** to open the export window. Save any single file with **Save as...**, or tick several and choose **Export selected to a folder** to write them all in one step. Available files: Excel workbook (marklist plus Summary, Class summary, Distractors, Item, Topic, Subject and, for multi-set tests, Set comparison sheets), marklist CSV, results report PDF, student scorecards PDF, and item, distractor, topic and subject analysis CSVs. Exports stay locked until every flagged sheet has been reviewed and the batch is complete. Re-saving an answer key re-scores stored sheets without rescanning.
+Choose **Export results** to open the export window. Save any single file with **Save as...**, or tick several and choose **Export selected to a folder** to write them all in one step. Available reports include ranked and subject-wise mark lists, one response analysis and assessment chart per student, per-student section/topic performance, expanded item statistics, scorecards, an Excel workbook with analysis tabs, and CSV marklist/item/distractor/topic/subject files. Results exports retain the original uploaded scan filename, PDF page number, and import timestamp in UTC. Exports stay locked until every flagged sheet has been reviewed and the batch is complete. Re-saving an answer key re-scores stored sheets without rescanning.
 
 ## 7. Stability, backups and updates
 

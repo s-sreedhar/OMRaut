@@ -8,8 +8,8 @@ from typing import Any
 from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
-    QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QInputDialog,
+    QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QSpinBox,
     QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -22,7 +22,7 @@ from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_c
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
 from omr_exam.theme import BAD_BG, GOOD_BG
 from omr_exam.widgets import (AppDialog, Banner, ChoiceDelegate, PillDelegate, Segmented, SuggestField, TintDelegate, alert, ask_text,
-                              button, confirm, divider, label, table)
+                              button, confirm, divider, grid_table, label, table)
 
 IMAGE_TYPES = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;All files (*.*)"
 
@@ -43,7 +43,8 @@ def _footer(layout: QVBoxLayout) -> QHBoxLayout:
 class NewTestDialog(QDialog):
     """Pick a template, name the test, done. Everything else is optional under 'Customize'."""
 
-    def __init__(self, parent=None, classes: list[str] | None = None, subjects: list[str] | None = None):
+    def __init__(self, parent=None, classes: list[str] | None = None, subjects: list[str] | None = None,
+                 manage_subjects=None):
         super().__init__(parent)
         self.setWindowTitle("Create a new test")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
@@ -52,7 +53,12 @@ class NewTestDialog(QDialog):
 
         self.title = QLineEdit(); self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
         self.class_name = SuggestField(classes or [], "e.g. 10A")
-        self.subject = SuggestField(subjects or [], "e.g. Science")
+        self.subject_options = sorted({str(value).strip() for value in (subjects or []) if str(value).strip()}, key=str.casefold)
+        self.manage_subjects_handler = manage_subjects
+        self.subject_list = QListWidget(); self.subject_list.setObjectName("checkList")
+        self.subject_list.setMinimumHeight(72); self.subject_list.setMaximumHeight(116)
+        self.subject_list.setAccessibleName("Subjects included in this test")
+        self._populate_subjects()
         self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(False); self.date.setDisplayFormat("d MMM yyyy")
 
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
@@ -65,7 +71,6 @@ class NewTestDialog(QDialog):
         self.set_codes.hide()
         self.set_editors: list[tuple[QLineEdit, QPushButton]] = []
         self.columns = QSpinBox(); self.columns.setRange(1, 4)
-        self.sections = QLineEdit(); self.sections.setPlaceholderText("Optional, e.g. Physics, Chemistry, Maths")
         self.name_field = QCheckBox("Name"); self.name_field.setChecked(True)
         self.class_field = QCheckBox("Class"); self.class_field.setChecked(True)
         self.correct_points = self._points(); self.incorrect_points = self._points(); self.blank_points = self._points()
@@ -79,6 +84,7 @@ class NewTestDialog(QDialog):
 
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content = QWidget(); content.setObjectName("page")
         scroll.setWidget(content); outer.addWidget(scroll, 1)
         root = QVBoxLayout(content)
@@ -97,7 +103,8 @@ class NewTestDialog(QDialog):
             choice.setAccessibleName(f"{template.name}. {template.description}")
             inner = QVBoxLayout(choice); inner.setContentsMargins(16, 12, 16, 12); inner.setSpacing(3)
             for text, name in ((template.name, "strong"), (template.description, "hint")):
-                line = _label(text, name); line.setAttribute(Qt.WA_TransparentForMouseEvents); line.setWordWrap(False)
+                line = _label(text, name); line.setAttribute(Qt.WA_TransparentForMouseEvents); line.setWordWrap(True)
+                line.setMinimumWidth(0)
                 inner.addWidget(line)
             choice.clicked.connect(lambda _c=False, t=template: self.apply_template(t))
             self.template_group.addButton(choice)
@@ -108,17 +115,24 @@ class NewTestDialog(QDialog):
         root.addWidget(_label("2 · NAME YOUR TEST", "eyebrow"))
         form = QGridLayout(); form.setHorizontalSpacing(14); form.setVerticalSpacing(4)
         for column, (caption, widget) in enumerate((("Test title", self.title), ("Class", self.class_name),
-                                                    ("Subject", self.subject), ("Date", self.date))):
+                                                    ("Date", self.date))):
             form.addWidget(_label(caption, "hint"), 0, column)
             form.addWidget(widget, 1, column)
-        form.setColumnStretch(0, 4); form.setColumnStretch(1, 2); form.setColumnStretch(2, 3); form.setColumnStretch(3, 2)
+        form.setColumnStretch(0, 5); form.setColumnStretch(1, 3); form.setColumnStretch(2, 2)
         root.addLayout(form)
+        subject_heading = QHBoxLayout()
+        subject_heading.addWidget(_label("Subjects in this test", "hint"))
+        subject_heading.addWidget(_label("Select one or more", "muted"))
+        subject_heading.addStretch(1)
+        subject_heading.addWidget(button("Manage subjects", self._manage_subjects, "ghost", "settings"))
+        root.addLayout(subject_heading)
+        root.addWidget(self.subject_list)
         self.form_error = _label("", "hint")
         self.form_error.hide()
         root.addWidget(self.form_error)
         self.title.textChanged.connect(lambda _text: self._clear_invalid(self.title))
         self.class_name.textChanged.connect(lambda _text: self._clear_invalid(self.class_name))
-        self.subject.textChanged.connect(lambda _text: self._clear_invalid(self.subject))
+        self.subject_list.itemChanged.connect(self._subjects_changed)
         self.summary = Banner("", "info")
         root.addWidget(self.summary)
         for signal in (self.question_count.valueChanged, self.options.textChanged, self.use_sets.toggled,
@@ -131,7 +145,7 @@ class NewTestDialog(QDialog):
         self.customize_toggle.toggled.connect(self._toggle_customize)
         root.addWidget(self.customize_toggle)
         self.customize = QFrame(); self.customize.setObjectName("card")
-        columns = QHBoxLayout(self.customize); columns.setContentsMargins(18, 16, 18, 16); columns.setSpacing(28)
+        columns = QVBoxLayout(self.customize); columns.setContentsMargins(18, 16, 18, 16); columns.setSpacing(18)
         sheet_form = QFormLayout(); sheet_form.setVerticalSpacing(8); sheet_form.setHorizontalSpacing(14)
         sheet_form.addRow(_label("SHEET", "eyebrow"))
         sheet_form.addRow("Questions", self.question_count)
@@ -146,7 +160,6 @@ class NewTestDialog(QDialog):
         sets_row.addWidget(self.sets_host); sets_row.addWidget(self.add_set_button, 0, Qt.AlignLeft)
         sheet_form.addRow("Set codes", sets_row)
         sheet_form.addRow("Roll number digits", self.roll_digits)
-        sheet_form.addRow("Subject sections", self.sections)
         fields_row = QHBoxLayout(); fields_row.addWidget(self.name_field); fields_row.addWidget(self.class_field); fields_row.addStretch(1)
         sheet_form.addRow("Printed fields", fields_row)
         mark_form = QFormLayout(); mark_form.setVerticalSpacing(8); mark_form.setHorizontalSpacing(14)
@@ -162,7 +175,9 @@ class NewTestDialog(QDialog):
         mark_form.addRow("Faint-mark sensitivity", self.faint_threshold)
         self.incorrect_points.setToolTip("Use a negative number for negative marking")
         self.options.setToolTip("Comma separated, for example A, B, C, D")
-        columns.addLayout(sheet_form, 1); columns.addLayout(mark_form, 1)
+        columns.addLayout(sheet_form)
+        columns.addWidget(divider())
+        columns.addLayout(mark_form)
         self.customize.hide()
         root.addWidget(self.customize)
         root.addStretch(1)
@@ -187,8 +202,44 @@ class NewTestDialog(QDialog):
         self.customize.setVisible(on)
         self.customize_toggle.setIcon(icon("chevron-down" if on else "chevron-right", theme.ACCENT, 16))
 
+    def _populate_subjects(self, selected: list[str] | None = None):
+        selected_keys = {str(value).strip().casefold() for value in (selected or [])}
+        values = list(self.subject_options)
+        for value in selected or []:
+            normalized = str(value).strip()
+            if normalized and normalized.casefold() not in {item.casefold() for item in values}:
+                values.append(normalized)
+        self.subject_list.blockSignals(True)
+        self.subject_list.clear()
+        for value in values:
+            item = QListWidgetItem(value)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if value.casefold() in selected_keys else Qt.Unchecked)
+            self.subject_list.addItem(item)
+        self.subject_list.blockSignals(False)
+
+    def selected_subjects(self) -> list[str]:
+        return [self.subject_list.item(index).text() for index in range(self.subject_list.count())
+                if self.subject_list.item(index).checkState() == Qt.Checked]
+
+    def _subjects_changed(self, _item):
+        self._clear_invalid(self.subject_list)
+        self._update_summary()
+
+    def _manage_subjects(self):
+        if self.manage_subjects_handler is None:
+            return
+        previous = self.selected_subjects()
+        updated = self.manage_subjects_handler()
+        if updated is not None:
+            self.subject_options = sorted({str(value).strip() for value in updated if str(value).strip()}, key=str.casefold)
+            allowed = {value.casefold() for value in self.subject_options}
+            self._populate_subjects([value for value in previous if value.casefold() in allowed])
+            self._update_summary()
+
     def _clear_invalid(self, field: QWidget):
-        theme.set_property(getattr(field, "edit", field), "invalid", "false")
+        target = field.edit if isinstance(field, SuggestField) else field
+        theme.set_property(target, "invalid", "false")
         self.form_error.hide()
 
     def apply_template(self, template: TestTemplate):
@@ -202,11 +253,15 @@ class NewTestDialog(QDialog):
         self.use_sets.setChecked(len(template.set_codes) > 1)
         self._set_codes(list(template.set_codes))
         self.roll_digits.setValue(template.roll_number_digits)
-        self.sections.setText(", ".join(template.sections))
+        selected = list(template.sections) if template.sections else (self.subject_options[:1] if self.subject_options else [])
+        self._populate_subjects(selected)
         self.correct_points.setValue(template.correct_points)
         self.incorrect_points.setValue(template.incorrect_points)
         self.blank_points.setValue(template.blank_points)
         self._update_summary()
+        if template.key == "custom":
+            self.customize_toggle.setChecked(True)
+            self.question_count.setFocus()
 
     def _update_summary(self, *_args):
         options = [item.strip().upper() for item in self.options.text().split(",") if item.strip()]
@@ -218,7 +273,8 @@ class NewTestDialog(QDialog):
         self.set_codes.setText(", ".join(sets))
         self.summary.setText(
             f"<b>{self.template.name}</b> · {self.question_count.value()} questions · "
-            f"{', '.join(options) or 'no options'} · {('sets ' + ', '.join(sets)) if sets else 'one paper'} · "
+            f"{', '.join(options) or 'no options'} · {(', '.join(self.selected_subjects()) or 'no subjects selected')} · "
+            f"{('sets ' + ', '.join(sets)) if sets else 'one paper'} · "
             f"+{self.correct_points.value():g} correct / {self.incorrect_points.value():g} wrong")
 
     def _sets_toggled(self, enabled: bool):
@@ -295,16 +351,16 @@ class NewTestDialog(QDialog):
                     raise ValueError("Partial points must look like 3:2, 7:1.5")
                 question, points = entry.split(":", 1)
                 partial_credit[str(int(question.strip()))] = float(points.strip())
-        sections = [x.strip() for x in self.sections.text().split(",") if x.strip()] or None
+        selected_subjects = self.selected_subjects()
         fields = [name for name, checked in (("name", self.name_field.isChecked()), ("class", self.class_field.isChecked())) if checked]
         return build_from_template(
-            self.template, title=self.title.text(), class_name=self.class_name.text(), subject=self.subject.text(),
+            self.template, title=self.title.text(), class_name=self.class_name.text(), subjects=selected_subjects,
             test_date=self.date.date().toString("yyyy-MM-dd"),
             question_count=self.question_count.value(),
             options=[x.strip() for x in self.options.text().split(",") if x.strip()],
             roll_number_digits=self.roll_digits.value(),
             set_codes=([editor.text().strip().upper() for editor, _button in self.set_editors] if self.use_sets.isChecked() else ["A"]),
-            fields=fields, columns=self.columns.value(), sections=sections,
+            fields=fields, columns=self.columns.value(), sections=selected_subjects,
             correct_points=self.correct_points.value(), incorrect_points=self.incorrect_points.value(),
             blank_points=self.blank_points.value(), bonus_questions=self._numbers(self.bonus.text()),
             dropped_questions=self._numbers(self.dropped.text()), partial_credit=partial_credit,
@@ -312,8 +368,9 @@ class NewTestDialog(QDialog):
             institute=self.institute.text())
 
     def attempt_accept(self):
-        missing = [(field, name) for field, name in ((self.title, "a test title"), (self.class_name, "the class"),
-                                                     (self.subject, "the subject")) if not field.text().strip()]
+        missing = [(field, name) for field, name in ((self.title, "a test title"), (self.class_name, "the class")) if not field.text().strip()]
+        if not self.selected_subjects():
+            missing.append((self.subject_list, "at least one subject"))
         if missing:
             for field, _name in missing:
                 theme.set_property(getattr(field, "edit", field), "invalid", "true")
@@ -355,9 +412,10 @@ class AnswerKeyDialog(QDialog):
         self.table = QTableWidget(len(self.questions), 2 + len(self.codes))
         self.single = len(self.codes) == 1
         self.table.setHorizontalHeaderLabels(["Q", "Topic (optional)"] + (["Answer"] if self.single else [f"Set {c}" for c in self.codes]))
-        self.table.setShowGrid(True)
+        grid_table(self.table)
         self.table.setItemDelegate(TintDelegate(self.table))
         self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.setFocusPolicy(Qt.StrongFocus)
         self.table.setAccessibleName("Answer key by question and set")
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
@@ -449,6 +507,10 @@ class AnswerKeyDialog(QDialog):
         self.save_button.setAutoDefault(False)
         foot.addWidget(self.save_button)
         self._refresh_status()
+        first_answer = next((row for row, question in enumerate(self.questions) if str(question["id"]) not in self.dropped), None)
+        if first_answer is not None:
+            self.table.setCurrentCell(first_answer, 2)
+            QTimer.singleShot(0, self.table.setFocus)
 
     # --- helpers -------------------------------------------------------
     def _valid_options(self) -> set[str]:
@@ -466,8 +528,11 @@ class AnswerKeyDialog(QDialog):
         self._color(item)
         self._refresh_status()
         row, column = item.row(), item.column()
-        if item.text() in self._valid_options() and row + 1 < self.table.rowCount():
-            QTimer.singleShot(0, lambda: self.table.setCurrentCell(row + 1, column))
+        if item.text() in self._valid_options():
+            next_row = next((candidate for candidate in range(row + 1, self.table.rowCount())
+                             if str(self.questions[candidate]["id"]) not in self.dropped), None)
+            if next_row is not None:
+                QTimer.singleShot(0, lambda r=next_row, c=column: self.table.setCurrentCell(r, c))
 
     def _color(self, item: QTableWidgetItem):
         if item.column() < 2 or item.text() in ("", "-"):
@@ -679,6 +744,95 @@ class AnswerKeyDialog(QDialog):
         return updated
 
 
+class ReferenceDataDialog(AppDialog):
+    """Manage global class and subject names shared by student and test forms."""
+
+    def __init__(self, repo, parent=None):
+        super().__init__(parent, "Manage classes and subjects",
+                         "Reusable lists appear in student and test forms. Rename updates saved records; remove only hides a name from future choices.",
+                         "settings", "info", width=760)
+        self.repo = repo
+        self.lists: dict[str, QListWidget] = {}
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        for kind, title, description in (("classes", "Classes", "Used for student rosters and tests."),
+                                         ("subjects", "Subjects", "A test can include several subjects.")):
+            frame, content = card((14, 14, 14, 14), 8)
+            content.addWidget(label(title, "cardTitle"))
+            content.addWidget(label(description, "hint"))
+            listing = QListWidget()
+            listing.setObjectName("checkList")
+            listing.setMinimumHeight(250)
+            listing.setAccessibleName(f"Global {title.lower()} list")
+            listing.currentItemChanged.connect(lambda _current, _previous, k=kind: self._sync_buttons(k))
+            self.lists[kind] = listing
+            content.addWidget(listing, 1)
+            actions = QHBoxLayout()
+            add = button(f"Add {kind[:-1]}", lambda k=kind: self._add(k), "ghost", "plus")
+            rename = button("Rename", lambda k=kind: self._rename(k), "ghost", "edit")
+            remove = button("Remove", lambda k=kind: self._remove(k), "ghost", "trash")
+            setattr(self, f"{kind}_rename", rename)
+            setattr(self, f"{kind}_remove", remove)
+            actions.addWidget(add); actions.addWidget(rename); actions.addWidget(remove)
+            content.addLayout(actions)
+            row.addWidget(frame, 1)
+        self.body.addLayout(row)
+        self.hint = label("Existing roster and test records are preserved when a name is removed from these choice lists.", "muted")
+        self.body.addWidget(self.hint)
+        self.add_button("Done", "primary", accept=True, default=True)
+        self.refresh()
+
+    def refresh(self):
+        for kind, listing in self.lists.items():
+            listing.clear()
+            listing.addItems(self.repo.reference_values(kind))
+            self._sync_buttons(kind)
+
+    def _selected(self, kind: str) -> str:
+        item = self.lists[kind].currentItem()
+        return item.text() if item else ""
+
+    def _sync_buttons(self, kind: str):
+        selected = bool(self._selected(kind))
+        getattr(self, f"{kind}_rename").setEnabled(selected)
+        getattr(self, f"{kind}_remove").setEnabled(selected)
+
+    def _add(self, kind: str):
+        title = "Add class" if kind == "classes" else "Add subject"
+        value, accepted = QInputDialog.getText(self, title, f"{title.removeprefix('Add ')} name:")
+        if not accepted:
+            return
+        try:
+            self.repo.add_reference_value(kind, value)
+            self.refresh()
+        except Exception as exc:
+            alert(self, "Could not add the name", str(exc), "bad")
+
+    def _rename(self, kind: str):
+        old = self._selected(kind)
+        if not old:
+            return
+        value, accepted = QInputDialog.getText(self, "Rename", "New name:", text=old)
+        if not accepted:
+            return
+        try:
+            self.repo.rename_reference_value(kind, old, value)
+            self.refresh()
+        except Exception as exc:
+            alert(self, "Could not rename the entry", str(exc), "bad")
+
+    def _remove(self, kind: str):
+        value = self._selected(kind)
+        if not value:
+            return
+        if not confirm(self, f"Remove {value} from choices?",
+                       "Existing student and test records keep this name. It will no longer be offered for new entries.",
+                       "Remove", danger=True):
+            return
+        self.repo.delete_reference_value(kind, value)
+        self.refresh()
+
+
 class StudentDialog(AppDialog):
     def __init__(self, parent=None, roll_number: str = "", name: str = "", class_name: str = "", editing: bool = False,
                  classes: list[str] | None = None):
@@ -795,6 +949,12 @@ class ExportDialog(AppDialog):
                          "download", "info", width=620)
         self.action: tuple[str, Any] | None = None
         self.checks: dict[str, QCheckBox] = {}
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); scroll.setMinimumHeight(260); scroll.setMaximumHeight(560)
+        rows_host = QWidget()
+        rows = QVBoxLayout(rows_host); rows.setContentsMargins(0, 0, 6, 0); rows.setSpacing(8)
+        scroll.setWidget(rows_host)
+        self.body.addWidget(scroll, 1)
         for kind, (title, hint, _name) in EXPORTS.items():
             row = QFrame(); row.setObjectName("issue")
             line = QHBoxLayout(row); line.setContentsMargins(12, 9, 12, 9); line.setSpacing(10)
@@ -806,7 +966,8 @@ class ExportDialog(AppDialog):
             text.addWidget(_label(title, "strong", wrap=False)); text.addWidget(_label(hint, "hint"))
             line.addLayout(text, 1)
             line.addWidget(button("Save as…", lambda k=kind: self._one(k), "", "download"))
-            self.body.addWidget(row)
+            rows.addWidget(row)
+        rows.addStretch(1)
         pick = QHBoxLayout()
         pick.addWidget(button("Select all", lambda: self._set_all(True), "link"))
         pick.addWidget(button("Clear", lambda: self._set_all(False), "link"))

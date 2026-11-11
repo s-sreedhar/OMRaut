@@ -44,6 +44,12 @@ TEMPLATES: tuple[TestTemplate, ...] = (
     TestTemplate("competitive", "Entrance Style (90)", "90 questions in 3 subjects, +4 / −1 marking.", 90,
                  columns=3, set_codes=("A", "B", "C", "D"), sections=("Physics", "Chemistry", "Maths"),
                  correct_points=4, incorrect_points=-1),
+    TestTemplate("large160", "Large Exam (160)", "160 questions in four columns; adjust the count and marking.", 160,
+                 columns=4, set_codes=("A", "B"), correct_points=4, incorrect_points=-1),
+    TestTemplate("large180", "Large Exam (180)", "180 questions in four columns; compact print layout.", 180,
+                 columns=4, set_codes=("A", "B"), correct_points=4, incorrect_points=-1),
+    TestTemplate("custom", "Custom OMR", "Choose your question count, options, subjects, sets, and marking.", 50,
+                 columns=2, set_codes=("A",)),
 )
 
 
@@ -54,15 +60,17 @@ def get_template(key: str) -> TestTemplate:
     raise KeyError(key)
 
 
-def build_from_template(template: TestTemplate, *, title: str, class_name: str, subject: str,
+def build_from_template(template: TestTemplate, *, title: str, class_name: str,
+                        subject: str | None = None, subjects: list[str] | None = None,
                         test_date: str | None = None, **overrides: Any) -> dict[str, Any]:
     """Create a validated test config from a template; any create_test_config argument can be overridden."""
+    chosen_subjects = list(subjects) if subjects is not None else (list(template.sections) if template.sections else ([subject] if subject else []))
     arguments: dict[str, Any] = dict(
-        title=title, test_date=test_date or date.today().isoformat(), class_name=class_name, subject=subject,
+        title=title, test_date=test_date or date.today().isoformat(), class_name=class_name, subjects=chosen_subjects,
         question_count=template.question_count, options=list(template.options),
         roll_number_digits=template.roll_number_digits, set_codes=list(template.set_codes),
         fields=["name", "class"], columns=template.columns,
-        sections=list(template.sections) or None, correct_points=template.correct_points,
+        sections=chosen_subjects, correct_points=template.correct_points,
         incorrect_points=template.incorrect_points, blank_points=template.blank_points,
     )
     arguments.update(overrides)
