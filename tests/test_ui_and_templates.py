@@ -101,7 +101,7 @@ def test_new_test_and_answer_key_dialogs_support_single_paper_mode():
     keys.close()
 
 
-def test_new_test_set_choices_can_add_and_remove_without_removing_last(monkeypatch):
+def test_new_test_set_codes_are_typed_and_final_set_cannot_be_removed(monkeypatch):
     pytest.importorskip("PySide6")
     from omr_exam import dialogs
     from omr_exam.dialogs import NewTestDialog
@@ -112,18 +112,15 @@ def test_new_test_set_choices_can_add_and_remove_without_removing_last(monkeypat
     dialog.subject.setCurrentText("Science")
     assert dialog.class_name.findText("10A") >= 0
     assert dialog.subject.findText("Science") >= 0
-    assert dialog.set_picker.count() == 2
-    monkeypatch.setattr(dialogs.QInputDialog, "getText", lambda *_args, **_kwargs: ("C", True))
+    assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "B"]
     dialog.add_set()
-    assert [dialog.set_picker.itemText(i) for i in range(dialog.set_picker.count())] == ["A", "B", "C"]
+    assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "B", "C"]
     monkeypatch.setattr(dialogs, "confirm", lambda *_args, **_kwargs: True)
-    dialog.set_picker.setCurrentText("B")
-    dialog.remove_set()
-    assert [dialog.set_picker.itemText(i) for i in range(dialog.set_picker.count())] == ["A", "C"]
-    dialog.set_picker.setCurrentText("C")
-    dialog.remove_set()
-    assert dialog.set_picker.count() == 1
-    assert not dialog.remove_set_button.isEnabled()
+    dialog.remove_set(dialog.set_editors[1][0])
+    assert [editor.text() for editor, _remove in dialog.set_editors] == ["A", "C"]
+    dialog.remove_set(dialog.set_editors[1][0])
+    assert len(dialog.set_editors) == 1
+    assert not dialog.set_editors[0][1].isEnabled()
     dialog.use_sets.setChecked(False)
     assert dialog.config()["sheet"]["set_codes"] == ["A"]
 

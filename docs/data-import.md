@@ -1,32 +1,46 @@
-# Add students, classes, and tests with JSON
+# Import students and tests
 
-OMRaut stores student and test data locally. Importing a roster adds or updates students by `roll_number`; it does not remove students missing from the file. If a roll number already exists, the imported name and class replace that roster entry. The import is validated before any rows are written.
+OMRaut keeps roster and test data on this computer. JSON import validates the complete file before writing any records.
 
-## Student roster and classes
+## Student roster JSON
 
-Choose **Students → Import roster → JSON**. A class is the `class_name` value on each student. Once imported, class names appear as suggestions in the student and new-test forms. You can also type a new class directly into those fields.
+Choose **Students → Import roster → JSON**. Each student needs a roll number and name; `class_name` is optional. A class is a reusable label on a student and is offered as a suggestion when creating tests. Imports add or update matching roll numbers; they do not delete students missing from the file.
 
 ```json
 {
   "students": [
     { "roll_number": "000123", "name": "Asha Rao", "class_name": "10A" },
-    { "roll_number": "000124", "name": "Ravi Shah", "class_name": "10A" },
-    { "roll_number": "000205", "name": "Mina Das", "class_name": "10B" }
+    { "roll_number": "000124", "name": "Ravi Shah", "class_name": "10A" }
   ]
 }
 ```
 
-Keep roll numbers as JSON strings so leading zeroes are preserved. `class_name` may be omitted or empty. Duplicate roll numbers in one import are rejected before changes are applied.
+Keep roll numbers as strings to preserve leading zeroes. Duplicate roll numbers within one file are rejected before changes are applied.
 
-## Tests
+## Test JSON
 
-Create a test in **Tests → New test**, or use **Import exam file** to import a complete exam JSON file. To create a reusable file, select a test and choose **Export exam file**. The exported file includes the sheet layout, question list, scoring rules, set codes, and answer keys. Importing it creates a separate test record; review the title, class, date, and answer keys before printing sheets.
+On **Tests**, choose **JSON example** to save a complete, valid test configuration, or start from [`test-config.example.json`](examples/test-config.example.json). Edit the values and use **Import exam file**. The app validates the whole configuration and sheet layout before adding the test. Import creates a new test record; it does not overwrite the selected test.
 
-The class and subject fields suggest values used by earlier tests and the student roster; both still accept new values. Set codes are managed with **Add set** and **Remove**. Removing a set requires confirmation, and the final remaining set cannot be removed. In single-paper mode, set bubbles are omitted from the printed sheet.
+The root object must contain these fields:
 
-## Safety checks
+| Field | Purpose |
+| --- | --- |
+| `schema_version` | Currently `1`. |
+| `test` | `title`, ISO date (`YYYY-MM-DD`), `class`, `subject`; optional `sections` and `institute`. |
+| `sheet` | Printable page dimensions, question/column counts, `options`, `set_codes`, roll digit count, and printed fields. |
+| `questions` | One ordered entry per question, with consecutive `id`, `section`, and optional `topic`. |
+| `sets` | One object per set code. Each has an `answer_key` mapping question IDs to valid option codes. |
+| `scoring` | Points for correct, incorrect, and blank responses; optional bonus, dropped, and partial-credit rules. |
+| `reader` | Optional mark and faint-mark thresholds. |
 
-- Use unique roll numbers and quote them as strings.
-- Keep a backup of the exported JSON before making bulk edits.
-- Inspect imported test details and every answer key before printing or scanning.
-- JSON imports do not transmit roster or exam data anywhere.
+The starter file is the recommended input shape. In particular, keep `sheet.set_codes` and the names under `sets` identical, make each code unique, and use every question ID from `1` through the question count. Answer keys may be empty while preparing a test, but must be completed before scanning results.
+
+Set codes are plain text. In the new-test form, type each code into its own field, use **Add set** or **Remove**, and keep at least one. Codes must be nonblank and unique without regard to case. A single-paper test has one set internally, but its printed sheet omits the set label and set bubbles.
+
+## Before printing
+
+- Keep roll numbers quoted as strings.
+- Check test title, class, subject, date, options, and all answer keys.
+- Print at 100% / actual size on the configured paper size; disable fit-to-page scaling.
+- Keep an exported JSON backup before making bulk edits.
+- Imports stay local and are not transmitted by OMRaut.

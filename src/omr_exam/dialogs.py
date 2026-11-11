@@ -7,7 +7,7 @@ from typing import Any
 from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QInputDialog,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox,
     QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -69,11 +69,12 @@ class NewTestDialog(QDialog):
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
         self.options = QLineEdit()
         self.roll_digits = QSpinBox(); self.roll_digits.setRange(1, 20)
-        self.institute = QLineEdit(); self.institute.setPlaceholderText("Printed at the top of the sheet (optional)")
+        self.institute = QLineEdit("QualifyIAS"); self.institute.setPlaceholderText("Institute name printed on the sheet")
         self.use_sets = QCheckBox("Students get different papers (sets A, B, ...)")
         self.use_sets.setToolTip("Leave this off for one paper. The sheet then has no set bubbles to fill in.")
         self.set_codes = QLineEdit()  # serialized config value
-        self.set_picker = combo(); self.set_picker.setAccessibleName("Test sets")
+        self.set_codes.hide()
+        self.set_editors: list[tuple[QLineEdit, QPushButton]] = []
         self.columns = QSpinBox(); self.columns.setRange(1, 4)
         self.sections = QLineEdit(); self.sections.setPlaceholderText("Optional, e.g. Physics, Chemistry, Maths")
         self.name_field = QCheckBox("Name"); self.name_field.setChecked(True)
@@ -134,6 +135,7 @@ class NewTestDialog(QDialog):
         for signal in (self.question_count.valueChanged, self.options.textChanged, self.use_sets.toggled,
                        self.correct_points.valueChanged, self.incorrect_points.valueChanged):
             signal.connect(self._update_summary)
+        self.use_sets.toggled.connect(self._sets_toggled)
 
         self.customize_toggle = button("Customize questions, sets, and marking", None, "link", "chevron-right")
         self.customize_toggle.setCheckable(True)
@@ -147,11 +149,13 @@ class NewTestDialog(QDialog):
         sheet_form.addRow("Answer options", self.options)
         sheet_form.addRow("Question columns", self.columns)
         sheet_form.addRow("Institute name", self.institute)
-        sheet_form.addRow("Test sets", self.use_sets)
-        sets_row = QHBoxLayout(); sets_row.addWidget(self.set_picker, 1)
-        self.add_set_button = QPushButton("Add set"); self.add_set_button.clicked.connect(self.add_set); sets_row.addWidget(self.add_set_button)
-        self.remove_set_button = QPushButton("Remove"); self.remove_set_button.clicked.connect(self.remove_set); sets_row.addWidget(self.remove_set_button)
-        sheet_form.addRow("Test sets", sets_row)
+        sheet_form.addRow("Multiple test sets", self.use_sets)
+        self.sets_host = QWidget()
+        self.sets_layout = QVBoxLayout(self.sets_host); self.sets_layout.setContentsMargins(0, 0, 0, 0); self.sets_layout.setSpacing(6)
+        self.add_set_button = button("Add set", self.add_set, "ghost", "plus")
+        sets_row = QVBoxLayout(); sets_row.setContentsMargins(0, 0, 0, 0); sets_row.setSpacing(6)
+        sets_row.addWidget(self.sets_host); sets_row.addWidget(self.add_set_button, 0, Qt.AlignLeft)
+        sheet_form.addRow("Set codes", sets_row)
         sheet_form.addRow("Roll number digits", self.roll_digits)
         sheet_form.addRow("Subject sections", self.sections)
         fields_row = QHBoxLayout(); fields_row.addWidget(self.name_field); fields_row.addWidget(self.class_field); fields_row.addStretch(1)
@@ -207,8 +211,7 @@ class NewTestDialog(QDialog):
         self.columns.setValue(template.columns)
         self.question_count.setValue(template.question_count)
         self.use_sets.setChecked(len(template.set_codes) > 1)
-        self._set_codes(list(template.set_codes) if len(template.set_codes) > 1 else ["A", "B"])
-        self.set_codes.setEnabled(self.use_sets.isChecked())
+        self._set_codes(list(template.set_codes))
         self.roll_digits.setValue(template.roll_number_digits)
         self.sections.setText(", ".join(template.sections))
         self.correct_points.setValue(template.correct_points)
@@ -218,38 +221,62 @@ class NewTestDialog(QDialog):
 
     def _update_summary(self, *_args):
         options = [item.strip().upper() for item in self.options.text().split(",") if item.strip()]
-        self.set_codes.setEnabled(False)
-        self.set_picker.setEnabled(self.use_sets.isChecked())
         self.add_set_button.setEnabled(self.use_sets.isChecked())
-        self.remove_set_button.setEnabled(self.use_sets.isChecked() and self.set_picker.count() > 1)
-        sets = [self.set_picker.itemText(i) for i in range(self.set_picker.count())] if self.use_sets.isChecked() else []
+        for editor, remove_button in self.set_editors:
+            editor.setEnabled(self.use_sets.isChecked())
+            remove_button.setEnabled(self.use_sets.isChecked() and len(self.set_editors) > 1)
+        sets = [editor.text().strip().upper() for editor, _button in self.set_editors] if self.use_sets.isChecked() else []
+        self.set_codes.setText(", ".join(sets))
         self.summary.setText(
             f"<b>{self.template.name}</b> · {self.question_count.value()} questions · "
             f"{', '.join(options) or 'no options'} · {('sets ' + ', '.join(sets)) if sets else 'one paper'} · "
             f"+{self.correct_points.value():g} correct / {self.incorrect_points.value():g} wrong")
 
+    def _sets_toggled(self, enabled: bool):
+        if enabled and len(self.set_editors) == 1:
+            code = next((candidate for candidate in "ABCDEFGH" if candidate != self.set_editors[0][0].text().strip().upper()), "B")
+            self._set_codes([self.set_editors[0][0].text(), code])
+        self._update_summary()
+
     def _set_codes(self, codes: list[str]):
-        normalized = list(dict.fromkeys(str(code).strip().upper() for code in codes if str(code).strip())) or ["A"]
-        self.set_codes.setText(", ".join(normalized))
-        self.set_picker.blockSignals(True); self.set_picker.clear(); self.set_picker.addItems(normalized); self.set_picker.blockSignals(False)
+        while self.sets_layout.count():
+            item = self.sets_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        normalized = [str(code).strip().upper() for code in codes if str(code).strip()] or ["A"]
+        self.set_editors.clear()
+        for index, code in enumerate(normalized, 1):
+            row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
+            row.addWidget(_label(f"Set {index}", "hint", wrap=False))
+            editor = QLineEdit(code); editor.setMaxLength(3); editor.setPlaceholderText("Code, e.g. A")
+            editor.setAccessibleName(f"Set {index} code")
+            editor.textChanged.connect(self._update_summary)
+            row.addWidget(editor, 1)
+            remove_button = button("Remove", lambda _checked=False, field=editor: self.remove_set(field), "ghost", "trash")
+            row.addWidget(remove_button)
+            host = QWidget(); host.setLayout(row); self.sets_layout.addWidget(host)
+            self.set_editors.append((editor, remove_button))
         self._update_summary()
 
     def add_set(self):
-        code, accepted = QInputDialog.getText(self, "Add test set", "Set code (for example C):")
-        code = code.strip().upper()
-        if accepted and code:
-            codes = [self.set_picker.itemText(i) for i in range(self.set_picker.count())]
-            if code in codes:
-                self.form_error.setText(f"<span style='color:{theme.BAD}'>Set {code} already exists.</span>"); self.form_error.show(); return
-            self._set_codes(codes + [code]); self.set_picker.setCurrentText(code)
-
-    def remove_set(self):
-        if self.set_picker.count() <= 1:
+        if len(self.set_editors) >= 8:
+            self.form_error.setText(f"<span style='color:{theme.BAD}'>A test can have at most 8 sets.</span>"); self.form_error.show(); return
+        if not self.use_sets.isChecked():
             return
-        code = self.set_picker.currentText()
+        codes = [editor.text().strip().upper() for editor, _button in self.set_editors]
+        code = next((candidate for candidate in "ABCDEFGH" if candidate not in codes), f"S{len(codes) + 1}")
+        self._set_codes(codes + [code])
+        self.set_editors[-1][0].setFocus()
+
+    def remove_set(self, editor: QLineEdit | None = None):
+        if len(self.set_editors) <= 1 or not self.use_sets.isChecked():
+            return
+        editor = editor or self.set_editors[-1][0]
+        code = editor.text().strip().upper()
         if not confirm(self, f"Remove set {code}?", "Its answer key will not be included in this new test.", "Remove set", danger=True):
             return
-        self._set_codes([self.set_picker.itemText(i) for i in range(self.set_picker.count()) if i != self.set_picker.currentIndex()])
+        self._set_codes([field.text() for field, _button in self.set_editors if field is not editor])
 
     def _update_column_capacity(self, _text: str = ""):
         option_count = len([item for item in self.options.text().split(",") if item.strip()])
@@ -287,7 +314,7 @@ class NewTestDialog(QDialog):
             question_count=self.question_count.value(),
             options=[x.strip() for x in self.options.text().split(",") if x.strip()],
             roll_number_digits=self.roll_digits.value(),
-            set_codes=([self.set_picker.itemText(i) for i in range(self.set_picker.count())] if self.use_sets.isChecked() else ["A"]),
+            set_codes=([editor.text().strip().upper() for editor, _button in self.set_editors] if self.use_sets.isChecked() else ["A"]),
             fields=fields, columns=self.columns.value(), sections=sections,
             correct_points=self.correct_points.value(), incorrect_points=self.incorrect_points.value(),
             blank_points=self.blank_points.value(), bonus_questions=self._numbers(self.bonus.text()),

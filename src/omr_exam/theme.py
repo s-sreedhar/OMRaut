@@ -27,8 +27,8 @@ TEXT = "#1D2420"
 TEXT_2 = "#3A433E"
 MUTED = "#656E68"
 FAINT = "#979F99"
-FIELD_BORDER = "#D5DED8"
-FIELD_HOVER = "#AABCB2"
+FIELD_BORDER = "#89978F"
+FIELD_HOVER = "#5F7468"
 
 SIDEBAR = "#16201D"
 SIDEBAR_HOVER = "#202C28"
@@ -187,13 +187,13 @@ QPushButton#answerChip[state="edited"] {{ background: {ACCENT_SOFT}; border-colo
 
 /* ---- inputs ---- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox, QPlainTextEdit, QTextEdit {{
-    background: {CARD}; border: 1px solid {FIELD_BORDER}; border-radius: 8px; padding: 7px 10px; min-height: 20px;
+    background: {CARD}; border: 1.4px solid {FIELD_BORDER}; border-radius: 8px; padding: 7px 10px; min-height: 20px;
     selection-background-color: {ACCENT}; selection-color: white; }}
 QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover {{ border-color: {FIELD_HOVER}; }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{
-    border-color: {ACCENT}; background: #FCFEFD; }}
+    border: 1.7px solid {ACCENT}; background: #FCFEFD; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ background: {SUBTLE}; color: {FAINT}; }}
-QLineEdit[invalid="true"] {{ border-color: {BAD}; background: #FEF6F4; }}
+QLineEdit[invalid="true"], QComboBox[invalid="true"], QDateEdit[invalid="true"] {{ border-color: {BAD}; background: #FEF6F4; }}
 QLineEdit#search {{ padding-left: 6px; }}
 QSpinBox, QDoubleSpinBox, QDateEdit {{ padding: 7px 26px 7px 10px; }}
 QAbstractSpinBox QLineEdit, QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; min-height: 0; }}

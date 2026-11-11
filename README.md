@@ -26,7 +26,7 @@ The reader corrects perspective and scan rotation from coded corner marks, class
 ## Importing your data
 
 - **Students and classes:** open **Students > More > Download example**, edit the CSV or JSON roster, then choose **Import roster**. Class names come from each student's `class_name`. Existing roll numbers are updated; invalid or duplicate rows stop the import. See [JSON import examples and details](docs/data-import.md).
-- **Tests:** use **Tests > Import exam file** to load a complete test configuration, including sets, scoring rules, and answer keys. To create a reusable file, select a test and choose **Export exam file**. For answer keys only, open **Enter answer key** and use its JSON import/export actions.
+- **Tests:** choose **JSON example** to save a valid, editable test configuration, then use **Import exam file**. The expected fields and a ready-to-edit [sample JSON](docs/examples/test-config.example.json) are documented in [the JSON guide](docs/data-import.md). Export any saved test with **Export exam file**.
 - **Keep editable copies:** use **Export exam JSON** for the full test, and **Export JSON** under More on Students for the roster.
 
 ## Current desktop workflow

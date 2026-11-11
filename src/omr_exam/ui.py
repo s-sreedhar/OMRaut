@@ -29,6 +29,7 @@ from omr_exam.reports import (class_results, export_csv, export_item_analysis_cs
 from omr_exam.review import ReviewPage
 from omr_exam.scan_job import ScanOutcome, ScanProgress, ScanWorker, process_scan_batch
 from omr_exam.sheets import generate_sheet_pdf
+from omr_exam.templates import TEMPLATES, build_from_template
 from omr_exam.updater import (UPDATE_SOURCE_URL, check_for_update, download_and_apply,
                               should_check_automatically)
 from omr_exam.widgets import (Banner, BusyDialog, DropZone, EmptyState, Histogram, Pill, PillDelegate, StatTile,
@@ -560,7 +561,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ tests & keys
     def _build_tests_page(self) -> QWidget:
         page, layout = _page("Tests", "Each test has its own answer sheet, answer key, and scan batches.",
-                             (button("Import exam file", self.import_config, "", "upload", "Import a test saved as JSON"),
+                             (button("JSON example", self.download_test_json_example, "ghost", "download",
+                                     "Save a valid test JSON file, then edit and import it"),
+                              button("Import exam file", self.import_config, "", "upload", "Import a test saved as JSON"),
                               button("New test", self.new_test, "primary", "plus")))
         split = QHBoxLayout()
         split.setSpacing(14)
@@ -776,7 +779,9 @@ class MainWindow(QMainWindow):
             alert(self, "Could not create test", str(exc), "bad")
 
     def import_config(self):
-        file, _ = QFileDialog.getOpenFileName(self, "Import exam file", "", "Exam file (*.json)")
+        file, _ = QFileDialog.getOpenFileName(
+            self, "Choose a test JSON file", "",
+            "Test configuration JSON (*.json);;All files (*.*)")
         if not file:
             return
         try:
@@ -786,6 +791,22 @@ class MainWindow(QMainWindow):
             self.toast("Test imported")
         except Exception as exc:
             alert(self, "This file could not be imported", str(exc), "bad")
+
+    def download_test_json_example(self):
+        config = build_from_template(
+            TEMPLATES[0], title="Example Test", class_name="10A", subject="Science",
+            question_count=10, columns=1, set_codes=["A"], institute="QualifyIAS")
+        path, _ = QFileDialog.getSaveFileName(self, "Save test JSON example", "test-config.json", "Test configuration (*.json)")
+        if not path:
+            return
+        try:
+            target = Path(path)
+            if target.suffix.lower() != ".json":
+                target = target.with_suffix(".json")
+            target.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+            self.toast("Valid test JSON saved. Edit the test details, questions, topics, sets, and scoring before importing.")
+        except Exception as exc:
+            alert(self, "Could not save the JSON example", str(exc), "bad")
 
     def edit_keys(self) -> bool:
         if not self.config or self.active_test_id is None:
@@ -1697,8 +1718,8 @@ class MainWindow(QMainWindow):
         self.scan_color_setting.setMaximumWidth(180)
         self.scan_color_setting.currentIndexChanged.connect(lambda _index: self.save_settings(quiet=True))
 
-        brand_card, bl = section("Institute", "Printed in the header of every answer sheet. Both are optional.")
-        self.institute_setting = QLineEdit(self.repo.get_setting("institute_name", ""))
+        brand_card, bl = section("Institute", "QualifyIAS is printed by default. Add a PNG or JPG logo to replace the built-in wordmark.")
+        self.institute_setting = QLineEdit(self.repo.get_setting("institute_name", "QualifyIAS"))
         self.institute_setting.setPlaceholderText("e.g. Greenfield Public School")
         self.institute_setting.setMaxLength(90)
         self.institute_setting.setMaximumWidth(360)
@@ -1773,7 +1794,8 @@ class MainWindow(QMainWindow):
 
     def sheet_branding(self) -> tuple[str, Path | None]:
         """Institute name (test's own, else the Settings default) and the saved logo, if any."""
-        name = (self.config or {}).get("test", {}).get("institute", "") or self.repo.get_setting("institute_name", "")
+        name = ((self.config or {}).get("test", {}).get("institute", "")
+                or self.repo.get_setting("institute_name", "QualifyIAS") or "QualifyIAS")
         logo = self._logo_path()
         return name, (logo if logo.is_file() else None)
 
