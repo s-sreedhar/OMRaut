@@ -31,5 +31,5 @@ jobs:
         run: .\installer\test-installed-package.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: OMRExamApp-Velopack-Windows
+          name: OMRaut-Velopack-Windows
           path: dist/velopack/*

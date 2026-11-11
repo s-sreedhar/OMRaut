@@ -52,8 +52,12 @@ CREATE TABLE IF NOT EXISTS config_audit (
 CREATE TABLE IF NOT EXISTS app_settings (
  key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS review_drafts (
+ result_id INTEGER PRIMARY KEY REFERENCES results(id) ON DELETE CASCADE,
+ payload_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _roster_header(value: Any) -> str:
@@ -153,6 +157,53 @@ class Repository:
         with _database_connection(self.path) as db:
             db.execute("INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (key, str(value)))
+
+    # ---- unsaved review work, kept so a crash or restart never loses corrections ----
+    def save_review_drafts(self, drafts: dict[int, dict[str, Any]]) -> None:
+        if not drafts:
+            return
+        with _database_connection(self.path) as db:
+            db.executemany(
+                "INSERT INTO review_drafts(result_id,payload_json) VALUES (?,?) ON CONFLICT(result_id) DO UPDATE SET "
+                "payload_json=excluded.payload_json,updated_at=CURRENT_TIMESTAMP",
+                [(int(result_id), json.dumps(payload, ensure_ascii=False)) for result_id, payload in drafts.items()])
+
+    def review_drafts(self, batch_id: int) -> dict[int, dict[str, Any]]:
+        with _database_connection(self.path) as db:
+            rows = db.execute("SELECT d.result_id,d.payload_json FROM review_drafts d JOIN results r ON r.id=d.result_id "
+                              "WHERE r.batch_id=?", (batch_id,)).fetchall()
+        drafts: dict[int, dict[str, Any]] = {}
+        for result_id, payload in rows:
+            try:
+                value = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                drafts[int(result_id)] = value
+        return drafts
+
+    def clear_review_drafts(self, result_ids: list[int]) -> None:
+        if not result_ids:
+            return
+        with _database_connection(self.path) as db:
+            db.executemany("DELETE FROM review_drafts WHERE result_id=?", [(int(result_id),) for result_id in result_ids])
+
+    def recover_interrupted_batches(self) -> int:
+        """Close batches left 'processing' by a crash or power loss so they are never mistaken for complete."""
+        with _database_connection(self.path) as db:
+            rows = db.execute("SELECT b.id,COUNT(r.id) FROM batches b LEFT JOIN results r ON r.batch_id=b.id "
+                              "WHERE b.status='processing' GROUP BY b.id").fetchall()
+            for batch_id, sheet_count in rows:
+                db.execute("UPDATE batches SET status='incomplete',processed_pages=? WHERE id=?", (sheet_count, batch_id))
+                db.execute("INSERT INTO batch_log(batch_id,level,message) VALUES (?,?,?)",
+                           (batch_id, "WARNING", f"The app closed while this batch was being read; {sheet_count} sheet(s) were saved."))
+        return len(rows)
+
+    def pending_review_counts(self) -> dict[int, int]:
+        """Sheets still needing review, per batch."""
+        with _database_connection(self.path) as db:
+            return {int(batch_id): int(count) for batch_id, count in db.execute(
+                "SELECT batch_id,COUNT(*) FROM results WHERE review_required=1 GROUP BY batch_id")}
 
     def tests(self) -> list[dict[str, Any]]:
         with _database_connection(self.path) as db:
@@ -427,7 +478,7 @@ class Repository:
                 raise ValueError(f"Backup database failed integrity check: {integrity}")
             tables = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not {"tests", "batches", "results"}.issubset(tables):
-                raise ValueError("Selected file is not an OMR Exam App database backup")
+                raise ValueError("Selected file is not an OMRaut database backup")
             source.backup(target)
         finally:
             target.close()
@@ -510,7 +561,7 @@ class Repository:
                         raise ValueError("Backup database failed integrity check")
                     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                     if not {"tests", "batches", "results"}.issubset(tables):
-                        raise ValueError("Backup database is not an OMR Exam App database")
+                        raise ValueError("Backup database is not an OMRaut database")
                 finally:
                     connection.close()
                 transaction = Path(temporary)
@@ -582,6 +633,36 @@ class Repository:
                     raise ValueError("Student CSV row has student data but no roll_number")
         if not rows:
             raise ValueError("Student CSV did not contain any roll numbers")
+        with _database_connection(self.path) as db:
+            db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+        return len(rows)
+
+    def import_students_json(self, path: str | Path) -> int:
+        """Import a roster JSON file; accept a list or {"students": [...]} wrapper."""
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read student JSON: {exc}") from exc
+        records = payload.get("students") if isinstance(payload, dict) else payload
+        if not isinstance(records, list) or not records:
+            raise ValueError('Student JSON must be a non-empty list or an object with a "students" list')
+        rows: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for index, record in enumerate(records, start=1):
+            if not isinstance(record, dict):
+                raise ValueError(f"Student entry {index} must be an object")
+            roll_value = record.get("roll_number", record.get("roll"))
+            name_value = record.get("name", record.get("student_name"))
+            class_value = record.get("class_name", record.get("class"))
+            roll = "" if roll_value is None else str(roll_value).strip()
+            name = "" if name_value is None else str(name_value).strip()
+            class_name = "" if class_value is None else str(class_value).strip()
+            if not roll or not name:
+                raise ValueError(f"Student entry {index} needs roll_number and name")
+            if roll in seen:
+                raise ValueError(f"Student JSON contains duplicate roll number {roll}")
+            seen.add(roll)
+            rows.append((roll, name, class_name))
         with _database_connection(self.path) as db:
             db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
         return len(rows)

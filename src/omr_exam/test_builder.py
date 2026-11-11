@@ -15,7 +15,8 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str, su
                        incorrect_points: float = -1, blank_points: float = 0,
                        bonus_questions: list[int] | None = None, dropped_questions: list[int] | None = None,
                        partial_credit: dict[str, float] | None = None,
-                       mark_threshold: float = 0.24, faint_threshold: float = 0.02) -> dict[str, Any]:
+                       mark_threshold: float = 0.24, faint_threshold: float = 0.02,
+                       institute: str = "") -> dict[str, Any]:
     title, class_name, subject = title.strip(), class_name.strip(), subject.strip()
     if not title or not class_name or not subject:
         raise ValueError("Test title, class, and subject are required")
@@ -28,9 +29,9 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str, su
     options = [str(x).strip().upper() for x in options]
     if len(options) < 2 or len(set(options)) != len(options) or any(not x for x in options):
         raise ValueError("Enter at least two unique, non-empty answer options")
-    set_codes = [str(x).strip().upper() for x in set_codes]
-    if not set_codes or len(set(set_codes)) != len(set_codes) or any(not x for x in set_codes):
-        raise ValueError("Enter one or more unique test set codes")
+    set_codes = [str(x).strip().upper() for x in set_codes] or ["A"]     # no sets = one paper
+    if len(set(set_codes)) != len(set_codes) or any(not x for x in set_codes):
+        raise ValueError("Enter unique test set codes, or leave sets off for a single paper")
     fields = [str(value).strip().lower() for value in (["name", "class"] if fields is None else fields)]
     if len(fields) != len(set(fields)) or any(value not in {"name", "class"} for value in fields):
         raise ValueError("Printed fields may contain name and/or class, at most once each")
@@ -66,5 +67,7 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str, su
                     "dropped_questions": dropped_questions or []},
         "reader": {"mark_threshold": mark_threshold, "faint_threshold": faint_threshold},
     }
+    if institute.strip():
+        config["test"]["institute"] = institute.strip()
     validate_config(config)
     return config

@@ -327,7 +327,7 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
         if index:
             content.append(PageBreak())
         name = row.get("student_name") or "Student"
-        identity = f"{name} · Roll {row.get('roll_number', '')} · {row.get('class_name') or config['test']['class']} · Set {row.get('set_code')}"
+        identity = f"{name} · Roll {row.get('roll_number', '')} · {row.get('class_name') or config['test']['class']}" + (f" · Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "")
         content.extend([Paragraph(escape(config["test"]["title"]), styles["Title"]),
                         Paragraph(escape(f"{config['test']['subject']} · {config['test']['date']}"), styles["Normal"]),
                         Paragraph(escape(f"Score {row.get('total')} · Rank {row.get('rank')} · Correct {row.get('correct')} · Incorrect {row.get('incorrect')} · Blank {row.get('blank')}"), styles["Normal"]), Spacer(1, 12)])

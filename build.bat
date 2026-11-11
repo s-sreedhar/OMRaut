@@ -1,6 +1,6 @@
 @echo off
 rem One-command build: double-click or run  build.bat
-rem Creates the Windows installer at dist\velopack\OMRExamApp-win-Setup.exe
+rem Creates the Windows installer at dist\velopack\OMRaut-win-Setup.exe
 setlocal
 cd /d "%~dp0"
 
@@ -41,15 +41,15 @@ if errorlevel 1 (
 )
 
 rem ---- 3. Build ----
-rem Stop running OMRExamApp instances if any so PyInstaller can overwrite dist
-taskkill /F /IM OMRExamApp.exe >nul 2>nul
+rem Stop running OMRaut instances if any so PyInstaller can overwrite dist
+powershell -NoProfile -Command "Get-Process -Name 'OMRaut','OMRExamApp' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\build.ps1" || goto :fail
 
 echo.
 echo ============================================================
 echo  BUILD OK
-echo  Installer: %CD%\dist\velopack\OMRExamApp-win-Setup.exe
-echo  Portable : %CD%\dist\velopack\OMRExamApp-win-Portable.zip
+echo  Installer: %CD%\dist\velopack\OMRaut-win-Setup.exe
+echo  Portable : %CD%\dist\velopack\OMRaut-win-Portable.zip
 echo ============================================================
 if exist "dist\velopack" start "" "dist\velopack"
 endlocal

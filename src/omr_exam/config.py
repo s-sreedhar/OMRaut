@@ -134,3 +134,11 @@ def load_config(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     validate_config(data)
     return data
+
+
+def uses_sets(config: dict[str, Any]) -> bool:
+    """True when students get different papers (two or more sets).
+
+    A test with a single paper prints no "SET" bubbles; the reader simply assumes its only set.
+    """
+    return len(config["sheet"]["set_codes"]) > 1

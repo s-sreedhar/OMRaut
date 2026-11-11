@@ -99,10 +99,11 @@ def create_layout(config: dict[str, Any]) -> SheetLayout:
         for digit in range(10):
             bubbles.append(Bubble("roll", str(position), str(digit), x, ry + 3.5 + digit * 4.1))
     set_y = ry + 48.0
-    identity.append(("SET", margin, set_y))
-    for idx, code in enumerate(sheet["set_codes"]):
-        x = margin + 20 + idx * 14
-        bubbles.append(Bubble("set", "0", str(code), x, set_y))
+    if len(sheet["set_codes"]) > 1:       # a single paper needs no set bubbles
+        identity.append(("SET", margin, set_y))
+        for idx, code in enumerate(sheet["set_codes"]):
+            x = margin + 20 + idx * 14
+            bubbles.append(Bubble("set", "0", str(code), x, set_y))
     # Handwritten fields are deliberately reserved for operator verification; this
     # initial release does not claim handwriting recognition.
     if "name" in sheet.get("fields", []):

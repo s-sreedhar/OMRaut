@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.pyd
 *.so
-
 # Distribution / packaging
 build/
 dist/
@@ -36,6 +35,7 @@ dist/installer/
 # Testing & Coverage
 .pytest_cache/
 .pytest_tmp/
+.pt/
 .coverage
 .coverage.*
 .cache

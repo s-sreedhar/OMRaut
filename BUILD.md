@@ -23,7 +23,7 @@ python -m pip install -e ".[dev]"
 ## 2. Run the app (for testing)
 
 ```powershell
-omr-exam
+omraut
 ```
 
 ## 3. Run the tests
@@ -58,19 +58,19 @@ If PowerShell blocks the script: `powershell -ExecutionPolicy Bypass -File .\ins
 
 | What | Path |
 |------|------|
-| Installer to give to users | `dist\velopack\OMRExamApp-win-Setup.exe` |
-| Portable zip (no install) | `dist\velopack\OMRExamApp-win-Portable.zip` |
-| App folder (direct testing) | `dist\OMRExamApp\OMRExamApp.exe` |
+| Installer to give to users | `dist\velopack\OMRaut-win-Setup.exe` |
+| Portable zip (no install) | `dist\velopack\OMRaut-win-Portable.zip` |
+| App folder (direct testing) | `dist\OMRaut\OMRaut.exe` |
 
 ## 6. Quick check of a built app
 
 ```powershell
-.\dist\OMRExamApp\OMRExamApp.exe --smoke-test   # exit code 0 = healthy
+.\dist\OMRaut\OMRaut.exe --smoke-test   # exit code 0 = healthy
 ```
 
 ## Release checklist
 
 1. Bump the version in `src\omr_exam\__init__.py` (`__version__`).
 2. Run the tests (step 3), then build (step 4).
-3. Install `OMRExamApp-win-Setup.exe` on a clean PC and try: create test, key, print, scan, review, export.
+3. Install `OMRaut-win-Setup.exe` on a clean PC and try: create test, key, print, scan, review, export.
 4. For auto-updates, set `$env:OMR_UPDATE_SOURCE_URL = "https://your-host/omr/"` before building and upload everything in `dist\velopack\` (upload `releases.win.json` last). See `docs\release.md`.

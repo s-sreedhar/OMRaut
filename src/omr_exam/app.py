@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import json
+import logging
 import sqlite3
 import tempfile
 import os
@@ -22,6 +23,11 @@ from PySide6.QtWidgets import QApplication
 
 from omr_exam.theme import apply_light_theme
 from omr_exam.ui import MainWindow
+
+
+APP_NAME = "OMRaut"
+LEGACY_NAME = "OMR Exam App"      # the name before the rename; its data folder is still honoured
+DATABASE_NAME = "omr-exam.sqlite3"
 
 
 def _smoke_test() -> int:
@@ -82,7 +88,6 @@ def _smoke_test() -> int:
             mark("answer", question, "A")
         for position, digit in enumerate("1234"):
             mark("roll", str(position), digit)
-        mark("set", "0", "A")
         read_result = read_image(image, config)
         if (read_result.answers != expected_answers or read_result.roll_number != "1234"
                 or read_result.set_code != "A" or read_result.requires_review):
@@ -94,7 +99,7 @@ def _smoke_test() -> int:
         workbook = Workbook()
         workbook.active.title = "Smoke"
         workbook.save(temporary_path / "smoke.xlsx")
-        application = QApplication(["OMRExamApp", "--smoke-test"])
+        application = QApplication(["OMRaut", "--smoke-test"])
         apply_light_theme(application)
         window = MainWindow(str(database_path))
         window.show()
@@ -124,13 +129,102 @@ def main() -> int:
         run_update_smoke_test(arguments[0], UPDATE_SOURCE_URL, arguments[1])
         return 0
     app = QApplication(sys.argv)
-    app.setApplicationName("OMR Exam App")
-    app.setOrganizationName("OMR Exam App")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    from omr_exam.icons import app_icon
+    app.setWindowIcon(app_icon())
     apply_light_theme(app)
-    data_dir = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
-    window = MainWindow(data_dir + "/omr-exam.sqlite3")
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    log_path = _install_crash_handling(data_dir)
+
+    from PySide6.QtCore import QLockFile
+    from omr_exam.widgets import alert
+
+    # Two copies writing to the same data would risk conflicting saves, so allow one.
+    lock = QLockFile(str(data_dir / "omr-exam.lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(200):
+        alert(None, f"{APP_NAME} is already open",
+              "Another window of the app is already running on this computer. Switch to it to continue your work.", "warn")
+        return 0
+    try:
+        window = MainWindow(str(data_dir / DATABASE_NAME))
+    except Exception as exc:
+        logging.getLogger("omr_exam").exception("The app could not start")
+        alert(None, "The app could not open its data",
+              f"{exc}\n\nNothing has been changed. Automatic safety copies are kept in:\n{data_dir / 'auto-backups'}\n\n"
+              f"Details were written to:\n{log_path}", "bad")
+        return 1
     window.show()
-    return app.exec()
+    window.run_startup_maintenance()
+    window.schedule_automatic_update_check()
+    try:
+        return app.exec()
+    finally:
+        lock.unlock()
+
+
+def _data_dir() -> Path:
+    """Where tests, scans and results live.
+
+    Work saved before the app was renamed stays exactly where it is and keeps being used, so an
+    upgrade can never lose or duplicate data. New installations use an OMRaut folder.
+    """
+    current = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+    legacy = current.parent / LEGACY_NAME / LEGACY_NAME
+    if not (current / DATABASE_NAME).exists() and (legacy / DATABASE_NAME).exists():
+        return legacy
+    return current
+
+
+def _install_crash_handling(data_dir: Path) -> Path:
+    """Log every unexpected error and tell the operator, instead of closing without a word."""
+    import faulthandler
+    import threading
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "omr-exam.log"
+    handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger = logging.getLogger("omr_exam")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        # Hard crashes inside native libraries cannot be caught, but their stack can be recorded.
+        global _FAULT_LOG
+        _FAULT_LOG = open(log_dir / "omr-exam-crash.log", "a", encoding="utf-8")
+        faulthandler.enable(_FAULT_LOG)
+    except Exception:
+        pass
+    showing = {"active": False}
+
+    def report(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        logger.error("Unexpected error", exc_info=(exc_type, exc_value, exc_traceback))
+        if showing["active"] or QApplication.instance() is None:
+            return
+        showing["active"] = True
+        try:
+            from omr_exam.widgets import alert
+            alert(QApplication.activeWindow(), "Something went wrong",
+                  f"The last action could not be completed, but the app is still running and your saved work is safe.\n\n"
+                  f"<b>{exc_type.__name__}:</b> {exc_value}\n\nDetails were written to:\n{log_path}", "bad")
+        finally:
+            showing["active"] = False
+
+    sys.excepthook = report
+    threading.excepthook = lambda args: logger.error(
+        "Unexpected error in background work", exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    logger.info("App started")
+    return log_path
+
+
+_FAULT_LOG = None
 
 
 if __name__ == "__main__":

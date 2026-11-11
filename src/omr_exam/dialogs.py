@@ -1,18 +1,18 @@
-"""Dialogs: new test (template picker), answer keys (fast entry), student editor."""
+"""Dialogs: new test (template picker), answer keys (fast entry), students, batch picker and log."""
 from __future__ import annotations
 
 import json
 from typing import Any
 
 from PySide6.QtCore import QDate, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QStyledItemDelegate,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QInputDialog,
+    QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox,
+    QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from omr_exam import theme
 from omr_exam.answer_keys import (import_excel_key, import_master_sheet, parse_compact_key,
                                   parse_pasted_key, validate_answer_key)
 from omr_exam.config import validate_config
@@ -20,36 +20,60 @@ from omr_exam.ingest import scan_pages
 from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
 from omr_exam.theme import BAD_BG, GOOD_BG
+from omr_exam.widgets import (AppDialog, Banner, PillDelegate, TintDelegate, alert, ask_text, button, combo, confirm, divider, label,
+                              table)
 
 IMAGE_TYPES = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;All files (*.*)"
 
 
 def _label(text: str, name: str = "") -> QLabel:
-    label = QLabel(text)
-    if name:
-        label.setObjectName(name)
-    label.setWordWrap(True)
-    return label
+    return label(text, name)
+
+
+def _footer(layout: QVBoxLayout) -> QHBoxLayout:
+    layout.addWidget(divider())
+    row = QHBoxLayout()
+    row.setContentsMargins(24, 12, 24, 14)
+    row.setSpacing(10)
+    layout.addLayout(row)
+    return row
+
+
+class _EditableCombo(QComboBox):
+    """A suggested-value field that keeps the familiar text() API for callers."""
+
+    def text(self) -> str:
+        return self.currentText()
+
+    def setText(self, value: str) -> None:
+        self.setEditText(value)
 
 
 class NewTestDialog(QDialog):
     """Pick a template, name the test, done. Everything else is optional under 'Customize'."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, classes: list[str] | None = None, subjects: list[str] | None = None):
         super().__init__(parent)
         self.setWindowTitle("Create a new test")
-        self.resize(780, 760)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.resize(820, 780)
         self.template: TestTemplate = TEMPLATES[2]
 
         self.title = QLineEdit(); self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
-        self.class_name = QLineEdit(); self.class_name.setPlaceholderText("e.g. 10A")
-        self.subject = QLineEdit(); self.subject.setPlaceholderText("e.g. Science")
-        self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(True)
+        self.class_name = _EditableCombo(); self.class_name.setEditable(True); self.class_name.setInsertPolicy(QComboBox.InsertAtBottom)
+        self.class_name.addItems(sorted(set(classes or []), key=str.casefold)); self.class_name.setCurrentText(""); self.class_name.setPlaceholderText("Choose or type a class")
+        self.subject = _EditableCombo(); self.subject.setEditable(True); self.subject.setInsertPolicy(QComboBox.InsertAtBottom)
+        self.subject.addItems(sorted(set(subjects or []), key=str.casefold)); self.subject.setCurrentText(""); self.subject.setPlaceholderText("Choose or type a subject")
+        self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(True); self.date.setDisplayFormat("d MMM yyyy")
 
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
         self.options = QLineEdit()
         self.roll_digits = QSpinBox(); self.roll_digits.setRange(1, 20)
-        self.set_codes = QLineEdit()
+        self.institute = QLineEdit(); self.institute.setPlaceholderText("Printed at the top of the sheet (optional)")
+        self.use_sets = QCheckBox("Students get different papers (sets A, B, ...)")
+        self.use_sets.setToolTip("Leave this off for one paper. The sheet then has no set bubbles to fill in.")
+        self.set_codes = QLineEdit()  # serialized config value
+        self.set_picker = combo(); self.set_picker.setAccessibleName("Test sets")
         self.columns = QSpinBox(); self.columns.setRange(1, 4)
         self.sections = QLineEdit(); self.sections.setPlaceholderText("Optional, e.g. Physics, Chemistry, Maths")
         self.name_field = QCheckBox("Name"); self.name_field.setChecked(True)
@@ -57,71 +81,108 @@ class NewTestDialog(QDialog):
         self.correct_points = self._points(); self.incorrect_points = self._points(); self.blank_points = self._points()
         self.mark_threshold = QDoubleSpinBox(); self.mark_threshold.setRange(0.05, 0.95); self.mark_threshold.setSingleStep(0.01); self.mark_threshold.setDecimals(2); self.mark_threshold.setValue(0.24)
         self.faint_threshold = QDoubleSpinBox(); self.faint_threshold.setRange(0.005, 0.90); self.faint_threshold.setSingleStep(0.01); self.faint_threshold.setDecimals(3); self.faint_threshold.setValue(0.02)
-        self.bonus = QLineEdit(); self.dropped = QLineEdit(); self.partial = QLineEdit()
+        self.bonus = QLineEdit(); self.bonus.setPlaceholderText("e.g. 5, 12")
+        self.dropped = QLineEdit(); self.dropped.setPlaceholderText("e.g. 7")
+        self.partial = QLineEdit(); self.partial.setPlaceholderText("e.g. 3:2, 7:1.5")
         self.options.textChanged.connect(self._update_column_capacity)
         self.columns.valueChanged.connect(self._update_question_capacity)
 
-        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 16); outer.setSpacing(0)
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
         content = QWidget(); content.setObjectName("page")
         scroll.setWidget(content); outer.addWidget(scroll, 1)
         root = QVBoxLayout(content)
-        root.setContentsMargins(24, 20, 24, 8); root.setSpacing(12)
+        root.setContentsMargins(24, 20, 24, 16); root.setSpacing(12)
         root.addWidget(_label("Create a new test", "pageTitle"))
-        root.addWidget(_label("1 · Choose a template", "sectionTitle"))
+        root.addWidget(_label("Choose the template closest to your exam. You can adjust the details afterwards.", "pageSub"))
+        root.addSpacing(4)
+        root.addWidget(_label("1 · CHOOSE A TEMPLATE", "eyebrow"))
         grid = QGridLayout(); grid.setSpacing(10)
         self.template_group = QButtonGroup(self); self.template_group.setExclusive(True)
         self.template_buttons: dict[str, QPushButton] = {}
         for index, template in enumerate(TEMPLATES):
-            button = QPushButton(f"{template.name}\n{template.description}")
-            button.setObjectName("templateCard"); button.setCheckable(True)
-            button.setMinimumHeight(66)
-            button.clicked.connect(lambda _c=False, t=template: self.apply_template(t))
-            self.template_group.addButton(button)
-            self.template_buttons[template.key] = button
-            grid.addWidget(button, index // 2, index % 2)
+            choice = QPushButton()
+            choice.setObjectName("templateCard"); choice.setCheckable(True)
+            choice.setCursor(Qt.PointingHandCursor)
+            choice.setAccessibleName(f"{template.name}. {template.description}")
+            inner = QVBoxLayout(choice); inner.setContentsMargins(16, 12, 16, 12); inner.setSpacing(3)
+            for text, name in ((template.name, "strong"), (template.description, "hint")):
+                line = _label(text, name); line.setAttribute(Qt.WA_TransparentForMouseEvents); line.setWordWrap(False)
+                inner.addWidget(line)
+            choice.clicked.connect(lambda _c=False, t=template: self.apply_template(t))
+            self.template_group.addButton(choice)
+            self.template_buttons[template.key] = choice
+            grid.addWidget(choice, index // 2, index % 2)
         root.addLayout(grid)
-        root.addWidget(_label("2 · Name your test", "sectionTitle"))
-        form = QFormLayout(); form.setLabelAlignment(Qt.AlignLeft); form.setHorizontalSpacing(18)
-        form.addRow("Test title *", self.title)
-        form.addRow("Class *", self.class_name)
-        form.addRow("Subject *", self.subject)
-        form.addRow("Date", self.date)
+        root.addSpacing(4)
+        root.addWidget(_label("2 · NAME YOUR TEST", "eyebrow"))
+        form = QGridLayout(); form.setHorizontalSpacing(14); form.setVerticalSpacing(4)
+        for column, (caption, widget) in enumerate((("Test title", self.title), ("Class", self.class_name),
+                                                    ("Subject", self.subject), ("Date", self.date))):
+            form.addWidget(_label(caption, "hint"), 0, column)
+            form.addWidget(widget, 1, column)
+        form.setColumnStretch(0, 3); form.setColumnStretch(1, 1); form.setColumnStretch(2, 2); form.setColumnStretch(3, 1)
         root.addLayout(form)
-        self.summary = _label("", "banner")
+        self.form_error = _label("", "hint")
+        self.form_error.hide()
+        root.addWidget(self.form_error)
+        self.title.textChanged.connect(lambda _text: self._clear_invalid(self.title))
+        self.class_name.currentTextChanged.connect(lambda _text: self._clear_invalid(self.class_name))
+        self.subject.currentTextChanged.connect(lambda _text: self._clear_invalid(self.subject))
+        self.summary = Banner("", "info")
         root.addWidget(self.summary)
+        for signal in (self.question_count.valueChanged, self.options.textChanged, self.use_sets.toggled,
+                       self.correct_points.valueChanged, self.incorrect_points.valueChanged):
+            signal.connect(self._update_summary)
 
-        self.customize = QGroupBox("Customize details (optional)")
-        self.customize.setCheckable(True); self.customize.setChecked(False)
-        adv = QFormLayout(self.customize)
-        adv.addRow("Number of questions", self.question_count)
-        adv.addRow("Answer options (comma separated)", self.options)
-        adv.addRow("Question columns", self.columns)
-        adv.addRow("Test set codes", self.set_codes)
-        adv.addRow("Roll number digits", self.roll_digits)
-        adv.addRow("Subject sections", self.sections)
+        self.customize_toggle = button("Customize questions, sets, and marking", None, "link", "chevron-right")
+        self.customize_toggle.setCheckable(True)
+        self.customize_toggle.toggled.connect(self._toggle_customize)
+        root.addWidget(self.customize_toggle)
+        self.customize = QFrame(); self.customize.setObjectName("card")
+        columns = QHBoxLayout(self.customize); columns.setContentsMargins(18, 16, 18, 16); columns.setSpacing(28)
+        sheet_form = QFormLayout(); sheet_form.setVerticalSpacing(8); sheet_form.setHorizontalSpacing(14)
+        sheet_form.addRow(_label("SHEET", "eyebrow"))
+        sheet_form.addRow("Questions", self.question_count)
+        sheet_form.addRow("Answer options", self.options)
+        sheet_form.addRow("Question columns", self.columns)
+        sheet_form.addRow("Institute name", self.institute)
+        sheet_form.addRow("Test sets", self.use_sets)
+        sets_row = QHBoxLayout(); sets_row.addWidget(self.set_picker, 1)
+        self.add_set_button = QPushButton("Add set"); self.add_set_button.clicked.connect(self.add_set); sets_row.addWidget(self.add_set_button)
+        self.remove_set_button = QPushButton("Remove"); self.remove_set_button.clicked.connect(self.remove_set); sets_row.addWidget(self.remove_set_button)
+        sheet_form.addRow("Test sets", sets_row)
+        sheet_form.addRow("Roll number digits", self.roll_digits)
+        sheet_form.addRow("Subject sections", self.sections)
         fields_row = QHBoxLayout(); fields_row.addWidget(self.name_field); fields_row.addWidget(self.class_field); fields_row.addStretch(1)
-        adv.addRow("Printed identity fields", fields_row)
-        adv.addRow("Points for correct", self.correct_points)
-        adv.addRow("Points for wrong (negative = penalty)", self.incorrect_points)
-        adv.addRow("Points for blank", self.blank_points)
-        adv.addRow("Bonus question numbers", self.bonus)
-        adv.addRow("Dropped question numbers", self.dropped)
-        adv.addRow("Partial points (Q:points)", self.partial)
-        adv.addRow("Filled-mark sensitivity", self.mark_threshold)
-        adv.addRow("Faint-mark sensitivity", self.faint_threshold)
-        self.customize.toggled.connect(self._toggle_customize)
-        self._toggle_customize(False)
+        sheet_form.addRow("Printed fields", fields_row)
+        mark_form = QFormLayout(); mark_form.setVerticalSpacing(8); mark_form.setHorizontalSpacing(14)
+        mark_form.addRow(_label("MARKING", "eyebrow"))
+        mark_form.addRow("Points for correct", self.correct_points)
+        mark_form.addRow("Points for wrong", self.incorrect_points)
+        mark_form.addRow("Points for blank", self.blank_points)
+        mark_form.addRow("Bonus questions", self.bonus)
+        mark_form.addRow("Dropped questions", self.dropped)
+        mark_form.addRow("Partial points (Q:points)", self.partial)
+        mark_form.addRow(_label("READER", "eyebrow"))
+        mark_form.addRow("Filled-mark sensitivity", self.mark_threshold)
+        mark_form.addRow("Faint-mark sensitivity", self.faint_threshold)
+        self.incorrect_points.setToolTip("Use a negative number for negative marking")
+        self.options.setToolTip("Comma separated, for example A, B, C, D")
+        columns.addLayout(sheet_form, 1); columns.addLayout(mark_form, 1)
+        self.customize.hide()
         root.addWidget(self.customize)
         root.addStretch(1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText("Create test and set answer key")
-        buttons.button(QDialogButtonBox.Save).setObjectName("primary")
-        buttons.accepted.connect(self.attempt_accept); buttons.rejected.connect(self.reject)
-        buttons_row = QHBoxLayout(); buttons_row.setContentsMargins(24, 10, 24, 0); buttons_row.addWidget(buttons)
-        outer.addLayout(buttons_row)
+        foot = _footer(outer)
+        foot.addStretch(1)
+        foot.addWidget(button("Cancel", self.reject))
+        self.create_button = button("Create test and enter answer key", self.attempt_accept, "primary", "arrow-right")
+        self.create_button.setLayoutDirection(Qt.RightToLeft)
+        self.create_button.setDefault(True)
+        foot.addWidget(self.create_button)
         self.apply_template(self.template)
+        self.title.setFocus()
 
     @staticmethod
     def _points() -> QDoubleSpinBox:
@@ -129,9 +190,13 @@ class NewTestDialog(QDialog):
         return box
 
     def _toggle_customize(self, on: bool):
-        for child in self.customize.findChildren(QWidget):
-            child.setVisible(on)
-        self.customize.setMaximumHeight(16777215 if on else 40)
+        from omr_exam.icons import icon
+        self.customize.setVisible(on)
+        self.customize_toggle.setIcon(icon("chevron-down" if on else "chevron-right", theme.ACCENT, 16))
+
+    def _clear_invalid(self, field: QLineEdit):
+        theme.set_property(field, "invalid", "false")
+        self.form_error.hide()
 
     def apply_template(self, template: TestTemplate):
         self.template = template
@@ -141,19 +206,57 @@ class NewTestDialog(QDialog):
         self._update_column_capacity()
         self.columns.setValue(template.columns)
         self.question_count.setValue(template.question_count)
-        self.set_codes.setText(", ".join(template.set_codes))
+        self.use_sets.setChecked(len(template.set_codes) > 1)
+        self._set_codes(list(template.set_codes) if len(template.set_codes) > 1 else ["A", "B"])
+        self.set_codes.setEnabled(self.use_sets.isChecked())
         self.roll_digits.setValue(template.roll_number_digits)
         self.sections.setText(", ".join(template.sections))
         self.correct_points.setValue(template.correct_points)
         self.incorrect_points.setValue(template.incorrect_points)
         self.blank_points.setValue(template.blank_points)
-        self.summary.setText(f"<b>{template.name}</b> - {template.summary()}")
+        self._update_summary()
+
+    def _update_summary(self, *_args):
+        options = [item.strip().upper() for item in self.options.text().split(",") if item.strip()]
+        self.set_codes.setEnabled(False)
+        self.set_picker.setEnabled(self.use_sets.isChecked())
+        self.add_set_button.setEnabled(self.use_sets.isChecked())
+        self.remove_set_button.setEnabled(self.use_sets.isChecked() and self.set_picker.count() > 1)
+        sets = [self.set_picker.itemText(i) for i in range(self.set_picker.count())] if self.use_sets.isChecked() else []
+        self.summary.setText(
+            f"<b>{self.template.name}</b> · {self.question_count.value()} questions · "
+            f"{', '.join(options) or 'no options'} · {('sets ' + ', '.join(sets)) if sets else 'one paper'} · "
+            f"+{self.correct_points.value():g} correct / {self.incorrect_points.value():g} wrong")
+
+    def _set_codes(self, codes: list[str]):
+        normalized = list(dict.fromkeys(str(code).strip().upper() for code in codes if str(code).strip())) or ["A"]
+        self.set_codes.setText(", ".join(normalized))
+        self.set_picker.blockSignals(True); self.set_picker.clear(); self.set_picker.addItems(normalized); self.set_picker.blockSignals(False)
+        self._update_summary()
+
+    def add_set(self):
+        code, accepted = QInputDialog.getText(self, "Add test set", "Set code (for example C):")
+        code = code.strip().upper()
+        if accepted and code:
+            codes = [self.set_picker.itemText(i) for i in range(self.set_picker.count())]
+            if code in codes:
+                self.form_error.setText(f"<span style='color:{theme.BAD}'>Set {code} already exists.</span>"); self.form_error.show(); return
+            self._set_codes(codes + [code]); self.set_picker.setCurrentText(code)
+
+    def remove_set(self):
+        if self.set_picker.count() <= 1:
+            return
+        code = self.set_picker.currentText()
+        if not confirm(self, f"Remove set {code}?", "Its answer key will not be included in this new test.", "Remove set", danger=True):
+            return
+        self._set_codes([self.set_picker.itemText(i) for i in range(self.set_picker.count()) if i != self.set_picker.currentIndex()])
 
     def _update_column_capacity(self, _text: str = ""):
         option_count = len([item for item in self.options.text().split(",") if item.strip()])
         max_columns = maximum_columns_for_options(210, max(2, option_count))
         self.columns.setMaximum(max(1, max_columns))
-        self.options.setToolTip("" if max_columns else "These options do not fit on the sheet; reduce the number of options.")
+        self.options.setToolTip("Comma separated, for example A, B, C, D" if max_columns
+                                else "These options do not fit on the sheet; reduce the number of options.")
         self._update_question_capacity()
 
     def _update_question_capacity(self, _columns: int | None = None):
@@ -179,48 +282,62 @@ class NewTestDialog(QDialog):
         sections = [x.strip() for x in self.sections.text().split(",") if x.strip()] or None
         fields = [name for name, checked in (("name", self.name_field.isChecked()), ("class", self.class_field.isChecked())) if checked]
         return build_from_template(
-            self.template, title=self.title.text(), class_name=self.class_name.text(), subject=self.subject.text(),
+            self.template, title=self.title.text(), class_name=self.class_name.currentText(), subject=self.subject.currentText(),
             test_date=self.date.date().toString("yyyy-MM-dd"),
             question_count=self.question_count.value(),
             options=[x.strip() for x in self.options.text().split(",") if x.strip()],
             roll_number_digits=self.roll_digits.value(),
-            set_codes=[x.strip() for x in self.set_codes.text().split(",") if x.strip()],
+            set_codes=([self.set_picker.itemText(i) for i in range(self.set_picker.count())] if self.use_sets.isChecked() else ["A"]),
             fields=fields, columns=self.columns.value(), sections=sections,
             correct_points=self.correct_points.value(), incorrect_points=self.incorrect_points.value(),
             blank_points=self.blank_points.value(), bonus_questions=self._numbers(self.bonus.text()),
             dropped_questions=self._numbers(self.dropped.text()), partial_credit=partial_credit,
-            mark_threshold=self.mark_threshold.value(), faint_threshold=self.faint_threshold.value())
+            mark_threshold=self.mark_threshold.value(), faint_threshold=self.faint_threshold.value(),
+            institute=self.institute.text())
 
     def attempt_accept(self):
+        missing = [(field, name) for field, name in ((self.title, "a test title"), (self.class_name, "the class"),
+                                                     (self.subject, "the subject")) if not (field.currentText() if isinstance(field, QComboBox) else field.text()).strip()]
+        if missing:
+            for field, _name in missing:
+                theme.set_property(field, "invalid", "true")
+            self.form_error.setText(f"<span style='color:{theme.BAD}'>Please enter {', '.join(name for _f, name in missing)}.</span>")
+            self.form_error.show()
+            missing[0][0].setFocus()
+            return
         try:
             self.result_config = self.config()
             self.accept()
         except Exception as exc:
-            QMessageBox.warning(self, "Please check the test details", str(exc))
+            self.form_error.setText(f"<span style='color:{theme.BAD}'>{exc}</span>")
+            self.form_error.show()
+            if not self.customize_toggle.isChecked():
+                self.customize_toggle.setChecked(True)
 
 
-class _AnswerDelegate(QStyledItemDelegate):
-    """One-letter editor that commits the moment a valid option is typed."""
+class _AnswerDelegate(TintDelegate):
+    """Choose a valid answer directly or type it with the keyboard."""
 
     def __init__(self, options: list[str], parent=None):
         super().__init__(parent)
         self.options = [str(o).upper() for o in options]
 
     def createEditor(self, parent, option, index):
-        editor = QLineEdit(parent)
-        editor.setMaxLength(max(len(o) for o in self.options))
-        editor.setAlignment(Qt.AlignCenter)
-
-        def typed(text: str):
-            value = text.strip().upper()
-            if value in self.options and not any(o != value and o.startswith(value) for o in self.options):
-                self.commitData.emit(editor)
-                self.closeEditor.emit(editor, QStyledItemDelegate.NoHint)
-        editor.textEdited.connect(typed)
+        editor = combo()
+        editor.setParent(parent)
+        editor.setEditable(True)
+        editor.addItem("Blank", "")
+        editor.addItems(self.options)
+        editor.setCurrentIndex(0)
         return editor
 
     def setModelData(self, editor, model, index):
-        model.setData(index, editor.text().strip().upper())
+        value = editor.currentText().strip().upper()
+        model.setData(index, "" if value == "BLANK" else value)
+
+    def setEditorData(self, editor, index):
+        value = str(index.data(Qt.EditRole) or "").strip().upper()
+        editor.setCurrentIndex(max(0, editor.findText(value)))
 
 
 class AnswerKeyDialog(QDialog):
@@ -234,17 +351,25 @@ class AnswerKeyDialog(QDialog):
         self.questions = config["questions"]
         self.dropped = {str(q) for q in config.get("scoring", {}).get("dropped_questions", [])}
         self._loading = False
-        self.setWindowTitle(f"Answer keys - {config['test']['title']}")
-        self.resize(1020, 720)
+        self._changed = False
+        self.setWindowTitle(f"Answer key - {config['test']['title']}")
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.resize(1060, 740)
 
         self.table = QTableWidget(len(self.questions), 2 + len(self.codes))
-        self.table.setHorizontalHeaderLabels(["Q", "Topic (optional)"] + [f"Set {c}" for c in self.codes])
-        self.table.setAlternatingRowColors(True)
+        self.single = len(self.codes) == 1
+        self.table.setHorizontalHeaderLabels(["Q", "Topic (optional)"] + (["Answer"] if self.single else [f"Set {c}" for c in self.codes]))
+        self.table.setShowGrid(True)
+        self.table.setItemDelegate(TintDelegate(self.table))
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.setAccessibleName("Answer key by question and set")
         header = self.table.horizontalHeader()
+        header.setHighlightSections(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         for column in range(2, 2 + len(self.codes)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(column, QHeaderView.Fixed)
+            self.table.setColumnWidth(column, 84)
             self.table.setItemDelegateForColumn(column, _AnswerDelegate(self.options, self.table))
         self.table.verticalHeader().setVisible(False)
         self._loading = True
@@ -263,38 +388,68 @@ class AnswerKeyDialog(QDialog):
         self._loading = False
         self.table.itemChanged.connect(self._item_changed)
 
-        side = QFrame(); side.setObjectName("card"); side.setFixedWidth(330)
+        side = QFrame(); side.setObjectName("card"); side.setFixedWidth(340)
         sv = QVBoxLayout(side); sv.setContentsMargins(16, 16, 16, 16); sv.setSpacing(10)
-        sv.addWidget(_label("Fastest ways to enter a key", "sectionTitle"))
-        self.set_picker = QComboBox(); self.set_picker.addItems([f"Set {c}" for c in self.codes])
-        sv.addWidget(_label("Apply to:", "hint")); sv.addWidget(self.set_picker)
+        sv.addWidget(_label("FASTEST WAY", "eyebrow"))
+        sv.addWidget(_label("Type the whole key", "cardTitle"))
+        self.set_picker = combo(); self.set_picker.addItems([f"Set {c}" for c in self.codes])
+        self.set_picker.setAccessibleName("Set to fill")
+        picker_row = QHBoxLayout(); picker_row.addWidget(_label("Fill", "hint")); picker_row.addWidget(self.set_picker, 1)
+        sv.addLayout(picker_row)
+        if self.single:
+            self.set_picker.hide()
+            picker_row.itemAt(0).widget().hide()
         example = "".join(self.options[i % len(self.options)] for i in range(8))
-        sv.addWidget(_label(f"<b>Type answers in order</b><br>e.g. {example}... or 1-A 2-B 3-C", "hint"))
-        self.quick = QLineEdit(); self.quick.setPlaceholderText("Type or paste the whole key here")
+        self.quick = QLineEdit(); self.quick.setPlaceholderText(f"e.g. {example}…  or  1-A 2-B 3-C")
+        self.quick.setAccessibleName("Answers in question order")
         self.quick.returnPressed.connect(self.apply_quick)
         sv.addWidget(self.quick)
-        apply = QPushButton("Apply typed key"); apply.setObjectName("primary"); apply.clicked.connect(self.apply_quick)
-        sv.addWidget(apply)
-        for text, handler in (("Paste from Excel / clipboard...", self.paste_key),
-                              ("Import Excel file...", self.import_excel),
-                              ("Read from a filled master sheet scan...", self.import_master_sheet),
-                              ("Clear this set", self.clear_set)):
-            button = QPushButton(text); button.clicked.connect(handler); sv.addWidget(button)
-        sv.addWidget(_label("Or click a cell in the table and just type the letter - it jumps to the next question automatically.", "hint"))
+        self.quick_error = _label("", "hint"); self.quick_error.hide()
+        sv.addWidget(self.quick_error)
+        self.quick.textChanged.connect(lambda _t: self.quick_error.hide())
+        sv.addWidget(button("Fill the key" if self.single else "Fill this set", self.apply_quick, "primary", "check"))
+        sv.addWidget(_label("Or click a cell in the table and type the letter. It moves to the next question by itself.", "hint"))
+        sv.addWidget(divider())
+        sv.addWidget(_label("USE AN EXISTING KEY", "eyebrow"))
+        for text, handler, icon_name in (("Paste from a spreadsheet", self.paste_key, "edit"),
+                                         ("Import an Excel file", self.import_excel, "upload"),
+                                         ("Import an answer key file (JSON)", self.import_json_key, "upload"),
+                                         ("Read a filled-in master sheet", self.import_master_sheet, "scan"),
+                                         ("Save this key as a file", self.export_json_key, "download")):
+            sv.addWidget(button(text, handler, "link", icon_name))
         sv.addStretch(1)
-        self.status = _label("", "banner")
-        sv.addWidget(self.status)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText("Save answer keys"); buttons.button(QDialogButtonBox.Save).setObjectName("primary")
-        buttons.accepted.connect(self.attempt_accept); buttons.rejected.connect(self.reject)
+        sv.addWidget(divider())
+        sv.addWidget(_label("PROGRESS", "eyebrow"))
+        self.set_bars: dict[str, tuple[QProgressBar, QLabel]] = {}
+        for code in self.codes:
+            row = QHBoxLayout(); row.setSpacing(8)
+            name = _label("Key" if self.single else f"Set {code}", "strong"); name.setFixedWidth(46)
+            bar = QProgressBar(); bar.setTextVisible(False)
+            count = _label("", "hint"); count.setFixedWidth(64); count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            row.addWidget(name); row.addWidget(bar, 1); row.addWidget(count)
+            sv.addLayout(row)
+            self.set_bars[code] = (bar, count)
+        self.status = _label("", "hint")   # plain-text summary kept for screen readers and callers
+        self.status.hide()
+        sv.addWidget(button("Clear the key" if self.single else "Clear this set", self.clear_set, "ghost", "trash"))
 
         body = QHBoxLayout(); body.setSpacing(14)
         body.addWidget(self.table, 1); body.addWidget(side)
-        root = QVBoxLayout(self); root.setContentsMargins(20, 18, 20, 18); root.setSpacing(12)
-        root.addWidget(_label("Answer keys", "pageTitle"))
-        root.addWidget(_label("Every question needs a correct answer in every set before sheets can be scanned. Cells turn red if the answer is not one of the sheet's options.", "pageSub"))
-        root.addLayout(body, 1); root.addWidget(buttons)
+        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
+        top = QVBoxLayout(); top.setContentsMargins(24, 20, 24, 16); top.setSpacing(6)
+        top.addWidget(_label("Answer key", "pageTitle"))
+        top.addWidget(_label("Every question needs a correct answer in every set before sheets can be printed or scanned. "
+                             "A cell turns red if the answer is not one of the sheet's options.", "pageSub"))
+        top.addSpacing(6)
+        top.addLayout(body, 1)
+        root.addLayout(top, 1)
+        foot = _footer(root)
+        self.foot_note = _label("", "hint")
+        foot.addWidget(self.foot_note, 1)
+        foot.addWidget(button("Cancel", self.reject))
+        self.save_button = button("Save answer key", self.attempt_accept, "primary", "check")
+        self.save_button.setAutoDefault(False)
+        foot.addWidget(self.save_button)
         self._refresh_status()
 
     # --- helpers -------------------------------------------------------
@@ -302,7 +457,10 @@ class AnswerKeyDialog(QDialog):
         return {o.upper() for o in self.options}
 
     def _item_changed(self, item: QTableWidgetItem):
-        if self._loading or item.column() < 2:
+        if self._loading:
+            return
+        self._changed = True
+        if item.column() < 2:
             return
         self._loading = True
         item.setText(item.text().strip().upper())
@@ -333,6 +491,7 @@ class AnswerKeyDialog(QDialog):
             item.setText(values.get(str(question["id"]), ""))
             self._color(item)
         self._loading = False
+        self._changed = True
         self._refresh_status()
 
     def _refresh_status(self):
@@ -340,11 +499,18 @@ class AnswerKeyDialog(QDialog):
         lines, complete = [], True
         for offset, code in enumerate(self.codes, 2):
             filled = sum(1 for row in needed if self.table.item(row, offset).text() in self._valid_options())
-            complete &= filled == len(needed)
-            lines.append(f"Set {code}: {filled}/{len(needed)} {'(done)' if filled == len(needed) else ''}")
+            done = filled == len(needed)
+            complete &= done
+            lines.append(f"Set {code}: {filled}/{len(needed)} {'(done)' if done else ''}")
+            bar, count = self.set_bars[code]
+            bar.setRange(0, max(1, len(needed))); bar.setValue(filled)
+            theme.set_property(bar, "tone", "good" if done else "")
+            count.setText(f"{filled}/{len(needed)}")
         self.status.setText("<br>".join(lines))
-        self.status.setObjectName("goodBanner" if complete else "banner")
-        self.status.style().unpolish(self.status); self.status.style().polish(self.status)
+        self._complete = complete
+        self.foot_note.setText("All sets are complete." if complete else
+                               "Some answers are still missing. You can save now and finish later.")
+        self.save_button.setText("Save answer key" if complete else "Save as draft")
 
     # --- actions -------------------------------------------------------
     def apply_quick(self):
@@ -352,17 +518,21 @@ class AnswerKeyDialog(QDialog):
             parsed = parse_compact_key(self.quick.text(), self.config)
             self._fill_column(self._set_column(), parsed)
             self.quick.clear()
+            if self.set_picker.currentIndex() + 1 < self.set_picker.count():
+                self.set_picker.setCurrentIndex(self.set_picker.currentIndex() + 1)
         except ValueError as exc:
-            QMessageBox.warning(self, "Check the typed key", str(exc))
+            self.quick_error.setText(f"<span style='color:{theme.BAD}'>{exc}</span>")
+            self.quick_error.show()
 
     def paste_key(self):
-        text, ok = QInputDialog.getMultiLineText(self, "Paste key", "Paste answers as rows (1  B) or one per line in question order:")
-        if not ok:
+        text = ask_text(self, "Paste answer key", f"Paste the answers for <b>{self.set_picker.currentText()}</b> as rows "
+                        f"(question number, answer) or one answer per line in question order.", "1\tB\n2\tD\n3\tA", "Fill this set")
+        if text is None:
             return
         try:
             self._fill_column(self._set_column(), parse_pasted_key(text, self.config))
         except ValueError as exc:
-            QMessageBox.warning(self, "Invalid answer key", str(exc))
+            alert(self, "The pasted key could not be used", str(exc), "warn")
 
     def import_excel(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select answer key workbook", "", "Excel workbook (*.xlsx)")
@@ -371,10 +541,73 @@ class AnswerKeyDialog(QDialog):
         try:
             self._fill_column(self._set_column(), import_excel_key(path, self.config))
         except Exception as exc:
-            QMessageBox.warning(self, "Excel key import failed", str(exc))
+            alert(self, "The Excel key could not be imported", str(exc), "warn")
+
+    def import_json_key(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import answer key file", "", "JSON files (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8-sig") as handle:
+                payload = json.load(handle)
+            set_payload = payload.get("sets") if isinstance(payload, dict) else None
+            if isinstance(set_payload, dict):
+                pending: dict[str, dict[str, str]] = {}
+                code_lookup = {code.upper(): code for code in self.codes}
+                for raw_code, value in set_payload.items():
+                    code = code_lookup.get(str(raw_code).upper())
+                    if code is None:
+                        continue
+                    answers = value.get("answer_key", value) if isinstance(value, dict) else value
+                    if not isinstance(answers, dict):
+                        raise ValueError(f"Set {code} must contain a question-to-answer object")
+                    pending[code] = validate_answer_key(self.config, answers, complete=False)
+                if not pending:
+                    raise ValueError("No matching answer keys were found for this test's set codes")
+                topics = payload.get("topics", {})
+                if not isinstance(topics, dict):
+                    raise ValueError('"topics" must map question numbers to topic names')
+                valid_questions = {str(question["id"]) for question in self.questions}
+                unknown_topics = set(map(str, topics)) - valid_questions
+                if unknown_topics:
+                    raise ValueError(f"Unknown topic question number(s): {', '.join(sorted(unknown_topics))}")
+                for code, answers in pending.items():
+                    self._fill_column(2 + self.codes.index(code), answers)
+                self._loading = True
+                for row, question in enumerate(self.questions):
+                    self.table.item(row, 1).setText(str(topics.get(str(question["id"]), question.get("topic", ""))))
+                self._loading = False
+            else:
+                answers = payload.get("answers", payload) if isinstance(payload, dict) else None
+                if not isinstance(answers, dict):
+                    raise ValueError('Use {"answers": {"1": "A"}} or {"sets": {"A": {"1": "A"}}}')
+                self._fill_column(self._set_column(), validate_answer_key(self.config, answers, complete=False))
+            self.foot_note.setText("Key imported. Check it against your master copy before saving.")
+        except Exception as exc:
+            alert(self, "The answer key file could not be imported", str(exc), "warn")
+
+    def export_json_key(self):
+        try:
+            keys = {}
+            for column, code in enumerate(self.codes, 2):
+                answers = {str(question["id"]): self.table.item(row, column).text().strip()
+                           for row, question in enumerate(self.questions)
+                           if self.table.item(row, column).text().strip() not in {"", "-"}}
+                keys[code] = validate_answer_key(self.config, answers, complete=False)
+            topics = {str(question["id"]): self.table.item(row, 1).text().strip()
+                      for row, question in enumerate(self.questions) if self.table.item(row, 1).text().strip()}
+            payload = {"format": "omr-answer-keys-v1", "test_title": self.config["test"]["title"],
+                       "sets": keys, "topics": topics}
+            path, _ = QFileDialog.getSaveFileName(self, "Save answer key file", "answer-keys.json", "JSON files (*.json)")
+            if path:
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, indent=2, ensure_ascii=False)
+                self.foot_note.setText(f"Key saved to {path}")
+        except Exception as exc:
+            alert(self, "The answer key could not be saved to a file", str(exc), "warn")
 
     def import_master_sheet(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select completed master sheet scan", "", IMAGE_TYPES)
+        path, _ = QFileDialog.getOpenFileName(self, "Select the scan of a filled-in master sheet", "", IMAGE_TYPES)
         if not path:
             return
         try:
@@ -384,21 +617,39 @@ class AnswerKeyDialog(QDialog):
             code = self.codes[self.set_picker.currentIndex()]
             parsed = import_master_sheet(pages[0][1], self.config, code)
             self._fill_column(self._set_column(), parsed)
-            QMessageBox.information(self, "Master sheet read", "Key read from the scan. Please compare it with your master copy before saving.")
+            self.foot_note.setText("Key read from the scan. Compare it with your master copy before saving.")
         except Exception as exc:
-            QMessageBox.warning(self, "Master sheet read failed", str(exc))
+            alert(self, "The master sheet could not be read", str(exc), "warn")
 
     def clear_set(self):
-        self._fill_column(self._set_column(), {})
+        if confirm(self, f"Clear {self.set_picker.currentText()}?", "Every answer entered for this set will be removed.",
+                   "Clear set", danger=True):
+            self._fill_column(self._set_column(), {})
 
     def attempt_accept(self):
         try:
-            self.result_config = self.updated_config()
+            if self._complete:
+                self.result_config = self.updated_config()
+            else:
+                draft = self.updated_config(complete=False)
+                if not confirm(self, "Save an unfinished answer key?",
+                               "Your progress is kept, but sheets cannot be printed or scanned until every set is complete.",
+                               "Save as draft", "Keep editing"):
+                    return
+                self.result_config = draft
+            self._changed = False
             self.accept()
         except Exception as exc:
-            QMessageBox.warning(self, "Answer key needs correction", str(exc))
+            alert(self, "The answer key needs a correction", str(exc), "warn")
 
-    def updated_config(self) -> dict[str, Any]:
+    def reject(self):
+        if self._changed and not confirm(self, "Discard changes to the answer key?",
+                                         "The answers you entered in this window have not been saved.",
+                                         "Discard changes", "Keep editing", danger=True):
+            return
+        super().reject()
+
+    def updated_config(self, complete: bool = True) -> dict[str, Any]:
         updated = json.loads(json.dumps(self.config))
         for row, question in enumerate(updated["questions"]):
             question["topic"] = self.table.item(row, 1).text().strip()
@@ -408,27 +659,114 @@ class AnswerKeyDialog(QDialog):
                 answer = self.table.item(row, column).text().strip()
                 if answer and answer != "-":
                     answers[str(question["id"])] = answer
-            updated["sets"][code]["answer_key"] = validate_answer_key(updated, answers)
+            updated["sets"][code]["answer_key"] = validate_answer_key(updated, answers, complete=complete)
         validate_config(updated)
         return updated
 
 
-class StudentDialog(QDialog):
-    def __init__(self, parent=None, roll_number: str = "", name: str = "", class_name: str = ""):
-        super().__init__(parent)
-        self.setWindowTitle("Student")
-        self.roll = QLineEdit(roll_number); self.roll.setPlaceholderText("Exactly as bubbled on the sheet, e.g. 000123")
-        if roll_number:
+class StudentDialog(AppDialog):
+    def __init__(self, parent=None, roll_number: str = "", name: str = "", class_name: str = "", editing: bool = False,
+                 classes: list[str] | None = None):
+        super().__init__(parent, "Edit student" if editing else "Add student",
+                         "The roll number must match what students bubble on the sheet.", "user-plus", "info", width=460)
+        self.roll = QLineEdit(roll_number); self.roll.setPlaceholderText("e.g. 000123")
+        if editing:
             self.roll.setReadOnly(True)
+            self.roll.setEnabled(False)
         self.name = QLineEdit(name); self.name.setPlaceholderText("Full name")
-        self.class_name = QLineEdit(class_name); self.class_name.setPlaceholderText("e.g. 10A (optional)")
-        form = QFormLayout(self)
-        form.addRow("Roll number *", self.roll); form.addRow("Name *", self.name); form.addRow("Class", self.class_name)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setObjectName("primary")
-        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-        self.setMinimumWidth(440)
+        self.class_name = combo(); self.class_name.setEditable(True); self.class_name.setInsertPolicy(QComboBox.InsertAtBottom)
+        self.class_name.addItems(sorted(set(classes or []), key=str.casefold)); self.class_name.setCurrentText(class_name)
+        self.class_name.setPlaceholderText("Choose or type a class (optional)")
+        form = QFormLayout(); form.setVerticalSpacing(10); form.setHorizontalSpacing(16)
+        form.addRow("Roll number", self.roll); form.addRow("Name", self.name); form.addRow("Class", self.class_name)
+        self.body.addLayout(form)
+        self.error = _label("", "hint"); self.error.hide()
+        self.body.addWidget(self.error)
+        self.add_button("Cancel", "", accept=False)
+        self.add_button("Save student", "primary", handler=self._attempt, default=True)
+        (self.name if roll_number else self.roll).setFocus()
+
+    def _attempt(self):
+        missing = [field for field in (self.roll, self.name) if not field.text().strip()]
+        for field in (self.roll, self.name):
+            theme.set_property(field, "invalid", "true" if field in missing else "false")
+        if missing:
+            self.error.setText(f"<span style='color:{theme.BAD}'>Roll number and name are both required.</span>")
+            self.error.show()
+            missing[0].setFocus()
+            return
+        self.accept()
 
     def values(self) -> tuple[str, str, str]:
-        return self.roll.text().strip(), self.name.text().strip(), self.class_name.text().strip()
+        return self.roll.text().strip(), self.name.text().strip(), self.class_name.currentText().strip()
+
+
+class BatchPickerDialog(AppDialog):
+    """Choose a saved scan batch from a list instead of a plain drop-down."""
+
+    def __init__(self, parent, batches: list[dict[str, Any]], pending: dict[int, int], current_id: int | None = None):
+        from omr_exam.ui import _batch_state, _batch_tone, _when
+
+        super().__init__(parent, "Open a scan batch", "Batches are listed newest first.", "layers", "info", width=760)
+        self.batches = batches
+        self.selected: dict[str, Any] | None = None
+        self.table = table(["Batch", "Test", "Scanned", "Sheets", "Status"], 1)
+        self.table.setItemDelegateForColumn(4, PillDelegate(_batch_tone, self.table))
+        self.table.setMinimumHeight(340)
+        self.table.setRowCount(len(batches))
+        for row, batch in enumerate(batches):
+            values = (f"#{batch['id']}", batch["title"], _when(batch["created_at"]), batch["sheet_count"],
+                      _batch_state(batch, pending.get(int(batch["id"]), 0)))
+            for column, value in enumerate(values):
+                self.table.setItem(row, column, QTableWidgetItem(str(value)))
+            if current_id is not None and int(batch["id"]) == current_id:
+                self.table.selectRow(row)
+        if batches and self.table.currentRow() < 0:
+            self.table.selectRow(0)
+        self.table.cellDoubleClicked.connect(lambda _r, _c: self._open())
+        self.body.addWidget(self.table)
+        self.add_button("Cancel", "", accept=False)
+        self.add_button("Open batch", "primary", handler=self._open, default=True)
+        self.table.setFocus()
+
+    def _open(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self.batches):
+            self.selected = self.batches[row]
+            self.accept()
+
+
+class BatchLogDialog(AppDialog):
+    """Everything that happened while a batch was read, as a readable table."""
+
+    def __init__(self, parent, batch_id: int, status: dict[str, Any], events: list[dict[str, Any]]):
+        from omr_exam.ui import _when
+
+        summary = (f"{status['status'].capitalize()} · {status['processed_pages']} of {status['expected_pages']} pages read · "
+                   f"{status['error_count']} error{'s' if status['error_count'] != 1 else ''}")
+        super().__init__(parent, f"Batch #{batch_id} log", summary, "list", "info", width=860)
+        self._lines = [f"Batch #{batch_id}: {summary}"]
+        log = table(["Time", "Level", "File", "Message"], 3)
+        log.setItemDelegateForColumn(1, PillDelegate(lambda text: {"Error": "bad", "Warning": "warn"}.get(text, "neutral"), log))
+        log.setSelectionMode(QAbstractItemView.NoSelection)
+        log.setWordWrap(True)
+        log.setMinimumHeight(380)
+        log.setRowCount(len(events))
+        for row, event in enumerate(events):
+            name = str(event["source_file"]).split("-", 1)[-1] if event["source_file"] else ""
+            for column, value in enumerate((_when(event["logged_at"]), str(event["level"]).capitalize(), name, event["message"])):
+                cell = QTableWidgetItem(str(value))
+                cell.setToolTip(str(value))
+                log.setItem(row, column, cell)
+            self._lines.append(f"{event['logged_at']} [{event['level']}] {name + ': ' if name else ''}{event['message']}")
+        log.resizeRowsToContents()
+        if events:
+            self.body.addWidget(log)
+        else:
+            self.body.addWidget(Banner("No events were recorded for this batch.", "info"))
+        self.copy_button = self.add_button("Copy log", "", handler=self._copy)
+        self.add_button("Close", "primary", accept=True, default=True)
+
+    def _copy(self):
+        QGuiApplication.clipboard().setText("\n".join(self._lines))
+        self.copy_button.setText("Copied")

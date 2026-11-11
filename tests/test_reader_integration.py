@@ -49,6 +49,20 @@ def test_generator_reader_flags_double_marks_and_correct_answers(tmp_path):
     assert any(flag["kind"] == "blank" and flag["question"] == "3" for flag in result.flags)
 
 
+def test_single_paper_reader_skips_hidden_set_bubbles(tmp_path):
+    config = create_test_config(title="Single paper", test_date="2026-11-10", class_name="QA", subject="Test",
+                                question_count=3, options=["A", "B", "C", "D"], roll_number_digits=4,
+                                set_codes=["A"], columns=1)
+    path = generate_sheet_pdf(config, tmp_path / "single.pdf")
+    image = next(iter(scan_pages(path)))[1]
+    layout = create_layout(config)
+
+    assert not any(bubble.group == "set" for bubble in layout.bubbles)
+    result = read_image(image, config)
+    assert result.set_code == "A"
+    assert not any(flag["kind"] == "invalid_set" for flag in result.flags)
+
+
 def test_generator_reader_corrects_180_degree_scan_rotation(tmp_path):
     config, image = _filled_sheet(tmp_path)
     result = read_image(np.rot90(image, 2).copy(), config)

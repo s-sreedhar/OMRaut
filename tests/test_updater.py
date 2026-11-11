@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import pytest
 
@@ -17,6 +18,14 @@ def test_update_source_requires_https_without_embedded_credentials():
     assert not updater.is_valid_update_source("https://user:password@updates.example/omr")
     assert not updater.is_valid_update_source("https://updates.example/omr#fragment")
     assert not updater.is_valid_update_source("https://updates.example:99999/omr")
+
+
+def test_automatic_update_check_runs_once_per_day():
+    now = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
+    assert updater.should_check_automatically("")
+    assert updater.should_check_automatically("not a timestamp")
+    assert not updater.should_check_automatically("2026-11-11T00:01:00+00:00", now=now)
+    assert updater.should_check_automatically("2026-11-10T12:00:00+00:00", now=now)
 
 
 def test_velopack_update_is_downloaded_and_applied(monkeypatch):
@@ -79,15 +88,17 @@ def test_update_smoke_test_checks_then_applies_expected_version(monkeypatch, tmp
         def download_updates(self, value):
             calls.append(("download", value))
 
-        def apply_updates_and_restart(self, value):
-            calls.append(("apply", value))
+        def apply_updates_and_restart_with_args(self, value, arguments):
+            calls.append(("apply", value, arguments))
             raise SystemExit(0)
 
     monkeypatch.setitem(sys.modules, "velopack", SimpleNamespace(UpdateManager=Manager))
+    marker = tmp_path / "done.txt"
     with pytest.raises(SystemExit):
-        updater.run_update_smoke_test("0.1.1-ci.7", "http://127.0.0.1:8123", tmp_path / "done.txt")
+        updater.run_update_smoke_test("0.1.1-ci.7", "http://127.0.0.1:8123", marker)
     assert calls == [("source", "http://127.0.0.1:8123"), ("check",),
-                     ("download", update), ("apply", update)]
+                     ("download", update), ("apply", update,
+                      ["--update-smoke-test", "0.1.1-ci.7", str(marker)])]
 
 
 @pytest.mark.parametrize("update, message", [

@@ -209,8 +209,12 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
     if "?" in roll:
         flags.append({"kind": "invalid_id", "message": "Roll number is blank or ambiguous"})
         roll = None
-    set_code = decoded.get("set:0")
-    if set_code is None:
-        flags.append({"kind": "invalid_set", "message": "Test set is blank or ambiguous"})
+    codes = [str(code) for code in config["sheet"]["set_codes"]]
+    if len(codes) == 1:
+        set_code = codes[0]                  # single paper: nothing to read
+    else:
+        set_code = decoded.get("set:0")
+        if set_code is None:
+            flags.append({"kind": "invalid_set", "message": "Test set is blank or ambiguous"})
     return ReadResult(path, answers, roll, set_code, scores, flags, aligned,
                       thresholds={"pixel_intensity": pixel_threshold, "mark_density": threshold, "faint_density": faint})

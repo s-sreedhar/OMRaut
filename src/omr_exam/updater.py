@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import os
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from omr_exam.resources import config_dir
 
 UPDATE_SOURCE_URL = os.environ.get("OMR_UPDATE_SOURCE_URL", "")
+AUTOMATIC_CHECK_INTERVAL = timedelta(hours=24)
 try:
     _config_path = config_dir() / "update.json"
     UPDATE_SOURCE_URL = UPDATE_SOURCE_URL or json.loads(
@@ -32,6 +34,22 @@ def is_valid_update_source(source_url: str) -> bool:
     if parsed.scheme == "https":
         return True
     return parsed.scheme == "http" and hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def should_check_automatically(last_check: str, *, now: datetime | None = None) -> bool:
+    """Allow one quiet startup check per day; malformed or missing timestamps retry."""
+    if not last_check:
+        return True
+    try:
+        previous = datetime.fromisoformat(last_check)
+    except (TypeError, ValueError):
+        return True
+    if previous.tzinfo is None:
+        previous = previous.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc) - previous.astimezone(timezone.utc) >= AUTOMATIC_CHECK_INTERVAL
 
 
 def check_for_update(source_url: str = UPDATE_SOURCE_URL):
@@ -72,5 +90,6 @@ def run_update_smoke_test(expected_version: str, source_url: str, completion_mar
     if target_version != expected_version:
         raise RuntimeError(f"Feed offered {target_version}, expected {expected_version}")
     manager.download_updates(update)
-    manager.apply_updates_and_restart(update)
+    manager.apply_updates_and_restart_with_args(
+        update, ["--update-smoke-test", expected_version, str(completion_marker)])
     raise RuntimeError("Velopack returned before restarting the application")

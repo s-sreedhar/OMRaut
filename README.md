@@ -1,15 +1,19 @@
-# OMR Exam App
+# OMRaut
 
 Offline Windows desktop software for making printable answer sheets, reading scanned sheets, scoring tests, and reviewing class results. It uses one versioned JSON configuration and a local SQLite database.
 
 ## Setup (Windows)
 
+For a ready-to-install Windows app, double-click `build.bat` in the project folder. It builds the installer and portable version under `dist\velopack`; install `OMRaut-win-Setup.exe` to launch OMRaut from the Windows Start menu. The one-time build requirements and troubleshooting steps are in [BUILD.md](BUILD.md).
+
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-omr-exam
+omraut
 ```
+
+When working from source, `omraut` starts the app from the activated environment. For the shortest build path, double-click `build.bat`; a .NET SDK and a supported Python (3.11–3.13) are required, and the script installs the pinned Velopack CLI if needed.
 
 Run the labeled-scan accuracy gate with `omr-harness` (or `python -m omr_exam.harness`). It requires 100% exact bubble agreement by default and exits nonzero if there are no labeled answers. Add scans and expected answers under `tests/samples/`; see its README. Use `--allow-empty` only for a local smoke check before samples are installed. `pytest` runs the unit and synthetic reader integration tests.
 
@@ -19,16 +23,22 @@ Each test is one versioned JSON file validated against `config/test-config.schem
 
 The reader corrects perspective and scan rotation from coded corner marks, classifies blank/single/faint/multiple marks, and routes ambiguous scans to operator review. The code includes synthetic generator-to-reader tests; exact accuracy on physical scans still must be demonstrated with representative labeled scan fixtures before release. No claim of universal 100% accuracy is made.
 
+## Importing your data
+
+- **Students and classes:** open **Students > More > Download example**, edit the CSV or JSON roster, then choose **Import roster**. Class names come from each student's `class_name`. Existing roll numbers are updated; invalid or duplicate rows stop the import. See [JSON import examples and details](docs/data-import.md).
+- **Tests:** use **Tests > Import exam file** to load a complete test configuration, including sets, scoring rules, and answer keys. To create a reusable file, select a test and choose **Export exam file**. For answer keys only, open **Enter answer key** and use its JSON import/export actions.
+- **Keep editable copies:** use **Export exam JSON** for the full test, and **Export JSON** under More on Students for the roster.
+
 ## Current desktop workflow
 
-- Dashboard lists local tests and recent batches; double-click a recent batch to reopen its review queue.
-- Build a test, question sections, sets, roll-number length, options, optional printed name/class fields, and scoring rules in the app. Maintain each set's key manually, by paste, Excel import, or by reading a completed master sheet.
-- Generate a print-ready PDF with orientation-coded registration marks. Print at 100% scale.
-- Upload individual image files, multi-page TIFFs, or scan PDFs, or select a folder of scans. Blank answers are reported, while faint, multiple, rotated/unreadable, invalid-ID, and duplicate-ID cases are routed to review.
-- Inspect the aligned sheet and zoom into each answer row, correct values, and re-score. Official exports are blocked while unresolved review-required sheets remain.
-- Import a student roster from CSV or Excel (`roll_number,name,class_name`; `Roll No`, `Student Name`, and `Class` headings are also accepted) and export results to CSV/XLSX/PDF. The Excel workbook includes result, item, topic, and subject analysis tabs; the PDF report adds analysis tables after the class marklist; analyses can also be exported individually as CSV. Excel numeric cells formatted with leading zeroes preserve those roll numbers. Re-keying a test re-scores saved responses without rescanning.
-- Use the in-app database backup/restore controls to protect local records.
-- Configure PDF render DPI (150–600), grayscale/color ingestion, and default correct/incorrect/blank marking values in Settings. These preferences are stored in the local SQLite database; each result records its color mode and PDF render DPI when applicable.
+- **Home** shows the active test, the next step, and recent scan batches. The sidebar follows the work: Tests and Students, Scan sheets and Review, then Results.
+- Create a test from a template (or import JSON), then enter its answer key by typing, pasting, Excel/JSON import, or a filled-in master sheet. Incomplete keys can be saved as drafts.
+- Generate a print-ready PDF with orientation-coded registration marks; print at 100% scale.
+- Drag in any number of scan files and folders (images, multi-page TIFFs, PDFs), review the queue, then read them in the background with live progress and safe cancel.
+- Review only what is uncertain: the scan with the reader's marks overlaid next to a keyboard-driven inspector (or an all-answers grid). Nothing unclear is guessed, and corrections are saved automatically as drafts.
+- Results shows the score distribution, hardest questions and per-student detail; exports (Excel with analysis tabs, CSV, PDF, scorecards) unlock once every flagged sheet is reviewed.
+- Reliability: daily automatic database copies, one-click backup/restore, recovery of interrupted batches, single-instance protection, and an error log with plain-language messages instead of crashes.
+- All dialogs, menus and messages are built into the app's own design; only the operating system's file pickers are used for choosing files.
 
 ## Windows installer and updates
 

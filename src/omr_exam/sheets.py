@@ -13,8 +13,12 @@ from omr_exam.layout import create_layout
 MM = 72 / 25.4
 
 
-def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 1) -> Path:
-    """Create one or more blank answer sheets, with exact registration squares."""
+def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 1, *,
+                       institute: str = "", logo: str | Path | None = None) -> Path:
+    """Create one or more blank answer sheets, with exact registration squares.
+
+    The header can carry the institute name and logo; both are optional and sit clear of the
+    corner squares and bubble areas, so they never affect reading."""
     if count < 1:
         raise ValueError("count must be at least one")
     layout = create_layout(config)
@@ -23,6 +27,13 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
     page_size = (layout.width * MM, layout.height * MM)
     pdf = canvas.Canvas(str(path), pagesize=page_size, pageCompression=1)
     pdf.setTitle(f"{config['test']['title']} - OMR answer sheet")
+    logo_reader = None
+    if logo and Path(logo).is_file():
+        try:
+            from reportlab.lib.utils import ImageReader
+            logo_reader = ImageReader(str(logo))
+        except Exception:
+            logo_reader = None          # an unreadable logo must never block printing the sheets
 
     def xy(x: float, y_top: float) -> tuple[float, float]:
         return x * MM, (layout.height - y_top) * MM
@@ -49,8 +60,34 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
             for dx, dy in holes:
                 hx, hy = xy(cx + dx, cy + dy)
                 pdf.circle(hx, hy, 0.58 * MM, stroke=0, fill=1)
-        text(config["test"]["title"], 18, 14, 12)
-        text(f"{config['test']['class']}  |  {config['test']['subject']}  |  {config['test']['date']}", 18, 20, 7)
+        institute_name = (institute or config["test"].get("institute", "")).strip()
+        header_right = layout.width - 18.0
+        if logo_reader is not None:
+            box_w, box_h = 22.0, 15.0
+            px, py = xy(header_right - box_w, 12.5 + box_h)
+            pdf.drawImage(logo_reader, px, py, box_w * MM, box_h * MM, preserveAspectRatio=True, anchor="ne", mask="auto")
+            header_right -= box_w + 4.0
+        available = (header_right - 18.0) * MM
+
+        def header_line(value: str, y: float, size: float, font: str) -> None:
+            while size > 6 and pdf.stringWidth(value, font, size) > available:
+                size -= 0.5
+            while len(value) > 4 and pdf.stringWidth(value, font, size) > available:
+                value = value[:-2].rstrip() + "…"
+            px, py = xy(18, y)
+            pdf.setFillColor(black)
+            pdf.setFont(font, size)
+            pdf.drawString(px, py, value)
+
+        details = f"{config['test']['class']}  |  {config['test']['subject']}  |  {config['test']['date']}"
+        if institute_name or logo_reader is not None:
+            if institute_name:
+                header_line(institute_name, 14.0, 11.5, "Helvetica-Bold")
+            header_line(config["test"]["title"], 20.0 if institute_name else 14.0, 9.5 if institute_name else 12, "Helvetica")
+            header_line(details, 25.0 if institute_name else 20.0, 7, "Helvetica")
+        else:
+            header_line(config["test"]["title"], 14.0, 12, "Helvetica")
+            header_line(details, 20.0, 7, "Helvetica")
         for field, x, y in layout.identity_labels:
             text(field, x, y, 7)
             if field in {"NAME", "CLASS"}:
@@ -67,7 +104,7 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
             text(str(position + 1), x - 0.7, 42, 5)
             for digit in range(10):
                 text(str(digit), x - 3.2, 47.0 + digit * 4.1, 4)
-        for code in config["sheet"]["set_codes"]:
+        for code in config["sheet"]["set_codes"] if len(config["sheet"]["set_codes"]) > 1 else ():
             bubble = next(b for b in layout.bubbles if b.group == "set" and b.value == str(code))
             text(str(code), bubble.x - 1.0, bubble.y - 2, 5)
         for option, x, y in layout.option_labels:

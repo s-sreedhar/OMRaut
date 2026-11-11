@@ -1,44 +1,56 @@
 $ErrorActionPreference = "Stop"
 $Workspace = Split-Path -Parent $PSScriptRoot
-$ReleaseDir = Join-Path $Workspace "dist\velopack"
-$SetupPath = Join-Path $ReleaseDir "OMRExamApp-win-Setup.exe"
+$ReleaseDir = if ($env:OMR_VELOPACK_OUTPUT_DIR) {
+  [System.IO.Path]::GetFullPath($env:OMR_VELOPACK_OUTPUT_DIR)
+} else {
+  Join-Path $Workspace "dist\velopack"
+}
+$SetupPath = Join-Path $ReleaseDir "OMRaut-win-Setup.exe"
 if (-not (Test-Path -LiteralPath $SetupPath -PathType Leaf)) {
   throw "Velopack setup executable not found: $SetupPath"
 }
 
-$TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "OMRExamApp-update-smoke-$([guid]::NewGuid().ToString('N'))"
+$TestTempBase = if ($env:OMR_TEST_TEMP_ROOT) {
+  [System.IO.Path]::GetFullPath($env:OMR_TEST_TEMP_ROOT)
+} else {
+  [System.IO.Path]::GetTempPath()
+}
+New-Item -ItemType Directory -Path $TestTempBase -Force | Out-Null
+$TestRoot = Join-Path $TestTempBase "OMRaut-update-smoke-$([guid]::NewGuid().ToString('N'))"
 $TestReleaseDir = Join-Path $TestRoot "feed"
 $InstallDir = Join-Path $TestRoot "installed"
 New-Item -ItemType Directory -Path $TestReleaseDir -Force | Out-Null
 Copy-Item -Path (Join-Path $ReleaseDir "*") -Destination $TestReleaseDir -Recurse -Force
 
-$TestSetupPath = Join-Path $TestReleaseDir "OMRExamApp-win-Setup.exe"
-& $TestSetupPath --silent --installto $InstallDir
-if ($LASTEXITCODE -ne 0) { throw "Velopack setup failed with exit code $LASTEXITCODE" }
+$TestSetupPath = Join-Path $TestReleaseDir "OMRaut-win-Setup.exe"
+$SetupProcess = Start-Process -FilePath $TestSetupPath -ArgumentList @("--silent", "--installto", $InstallDir) -Wait -PassThru -WindowStyle Hidden
+if ($SetupProcess.ExitCode -ne 0) { throw "Velopack setup failed with exit code $($SetupProcess.ExitCode)" }
 
-$InstalledApp = Join-Path $InstallDir "OMRExamApp.exe"
+$InstalledApp = Join-Path $InstallDir "OMRaut.exe"
 foreach ($InstalledArtifact in @($InstalledApp, (Join-Path $InstallDir "Update.exe"),
-                                  (Join-Path $InstallDir "current\OMRExamApp.exe"))) {
+                                  (Join-Path $InstallDir "current\OMRaut.exe"))) {
   if (-not (Test-Path -LiteralPath $InstalledArtifact -PathType Leaf)) {
     throw "Velopack did not install required application file: $InstalledArtifact"
   }
 }
 
 $env:QT_QPA_PLATFORM = "offscreen"
-& $InstalledApp --smoke-test
-if ($LASTEXITCODE -ne 0) { throw "Installed application smoke test failed with exit code $LASTEXITCODE" }
+$InstalledPayload = Join-Path $InstallDir "current\OMRaut.exe"
+$SmokeProcess = Start-Process -FilePath $InstalledPayload -ArgumentList "--smoke-test" -Wait -PassThru -WindowStyle Hidden
+if ($SmokeProcess.ExitCode -ne 0) { throw "Installed application smoke test failed with exit code $($SmokeProcess.ExitCode)" }
 
 $ReleaseManifestPath = Join-Path $TestReleaseDir "releases.win.json"
 $CurrentRelease = (Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json).Assets |
-  Where-Object { $_.PackageId -eq "OMRExamApp" -and $_.Type -eq "Full" } |
+  Where-Object { $_.PackageId -eq "OMRaut" -and $_.Type -eq "Full" } |
+  Sort-Object { [version]$_.Version } -Descending |
   Select-Object -First 1
 if (-not $CurrentRelease -or $CurrentRelease.Version -notmatch '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
   throw "Could not determine the installed package version for the local update test."
 }
 $UpdateVersion = "$($Matches.major).$($Matches.minor).$([int]$Matches.patch + 1)"
-$AppDir = Join-Path $Workspace "dist\OMRExamApp"
+$AppDir = Join-Path $Workspace "dist\OMRaut"
 $Vpk = Get-Command vpk -ErrorAction Stop
-& $Vpk.Source pack --packId OMRExamApp --packVersion $UpdateVersion --packDir $AppDir --mainExe OMRExamApp.exe --packTitle "OMR Exam App" --packAuthors "OMR Exam App" --runtime win-x64 --outputDir $TestReleaseDir
+& $Vpk.Source pack --packId OMRaut --packVersion $UpdateVersion --packDir $AppDir --mainExe OMRaut.exe --packTitle "OMRaut" --icon (Join-Path $Workspace "installer\OMRaut.ico") --packAuthors "OMRaut" --runtime win-x64 --outputDir $TestReleaseDir
 if ($LASTEXITCODE -ne 0) { throw "Could not build local OTA update $UpdateVersion (exit code $LASTEXITCODE)" }
 
 $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -84,3 +96,4 @@ try {
 }
 
 Write-Output "Installed the Velopack package, passed the OMR smoke test, and applied OTA update $UpdateVersion."
+Remove-Item -LiteralPath $TestRoot -Recurse -Force
