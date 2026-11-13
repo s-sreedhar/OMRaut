@@ -40,6 +40,16 @@ def _footer(layout: QVBoxLayout) -> QHBoxLayout:
     return row
 
 
+def _fit_dialog(dialog: QDialog, width: int, height: int) -> None:
+    """Resize a dialog while keeping it inside the available screen geometry."""
+    screen = dialog.screen() or QGuiApplication.primaryScreen()
+    if screen is not None:
+        avail = screen.availableGeometry()
+        width = min(width, max(640, avail.width() - 48))
+        height = min(height, max(520, avail.height() - 48))
+    dialog.resize(width, height)
+
+
 class NewTestDialog(QDialog):
     """Pick a template, name the test, done. Everything else is optional under 'Customize'."""
 
@@ -48,7 +58,7 @@ class NewTestDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Create a new test")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.resize(820, 780)
+        _fit_dialog(self, 820, 780)
         self.template: TestTemplate = TEMPLATES[2]
 
         self.title = QLineEdit(); self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
@@ -407,7 +417,7 @@ class AnswerKeyDialog(QDialog):
         self._changed = False
         self.setWindowTitle(f"Answer key - {config['test']['title']}")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.resize(1060, 740)
+        _fit_dialog(self, 1060, 740)
 
         self.table = QTableWidget(len(self.questions), 2 + len(self.codes))
         self.single = len(self.codes) == 1

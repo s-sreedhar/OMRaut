@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter,
@@ -166,8 +166,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OMRaut")
         from omr_exam.icons import app_icon
         self.setWindowIcon(app_icon())
-        self.resize(1400, 860)
-        self.setMinimumSize(1120, 700)
+        self.setMinimumSize(960, 620)
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            self.resize(min(1400, max(960, avail.width() - 40)), min(860, max(620, avail.height() - 40)))
+        else:
+            self.resize(1400, 860)
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("pages")
@@ -2037,6 +2042,15 @@ class MainWindow(QMainWindow):
             saved = self.repo.get_setting("window_geometry", "")
             if saved:
                 self.restoreGeometry(QByteArray(base64.b64decode(saved)))
+                screen = self.screen() or QGuiApplication.primaryScreen()
+                if screen is not None and not self.isMaximized():
+                    avail = screen.availableGeometry()
+                    geom = self.geometry()
+                    w = min(geom.width(), avail.width())
+                    h = min(geom.height(), avail.height())
+                    x = max(avail.left(), min(geom.x(), avail.right() - w + 1))
+                    y = max(avail.top(), min(geom.y(), avail.bottom() - h + 1))
+                    self.setGeometry(x, y, w, h)
         except Exception:
             pass
 
