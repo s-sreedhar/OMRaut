@@ -22,7 +22,7 @@ from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_c
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
 from omr_exam.theme import BAD_BG, GOOD_BG
 from omr_exam.widgets import (AppDialog, Banner, ChoiceDelegate, ExcelFillTable, PillDelegate, Segmented, SubjectDelegate,
-                              SuggestField, TintDelegate, alert, ask_text, button, card, confirm, divider, grid_table, label, table)
+                              SuggestField, TintDelegate, alert, ask_text, button, card, combo, confirm, divider, grid_table, label, table)
 
 IMAGE_TYPES = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;All files (*.*)"
 
@@ -72,7 +72,7 @@ class NewTestDialog(QDialog):
         self.manage_subjects_handler = manage_subjects
         self.manage_classes_handler = manage_classes
         self.subject_list = QListWidget(); self.subject_list.setObjectName("checkList")
-        self.subject_list.setMinimumHeight(72); self.subject_list.setMaximumHeight(116)
+        self.subject_list.setMinimumHeight(96); self.subject_list.setMaximumHeight(150)
         self.subject_list.setAccessibleName("Subjects included in this test")
         if edit_subject is not None:
             self.subject_list.setToolTip("Check to select · Double-click or right-click a subject to edit/update")
@@ -80,7 +80,7 @@ class NewTestDialog(QDialog):
             self.subject_list.setContextMenuPolicy(Qt.CustomContextMenu)
             self.subject_list.customContextMenuRequested.connect(self._subject_context_menu)
         self._populate_subjects()
-        self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(False); self.date.setDisplayFormat("d MMM yyyy")
+        self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(True); self.date.setDisplayFormat("d MMM yyyy")
 
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
         self.options = QLineEdit()
@@ -501,7 +501,7 @@ class SetSubjectsDialog(AppDialog):
 
         range_row = QHBoxLayout()
         range_row.setSpacing(8)
-        self.subject_combo = QComboBox()
+        self.subject_combo = combo()
         self.subject_combo.addItems(self.subjects)
         self.from_q = QSpinBox(); self.from_q.setRange(1, max(self.question_ids)); self.from_q.setValue(1)
         self.to_q = QSpinBox(); self.to_q.setRange(1, max(self.question_ids)); self.to_q.setValue(max(self.question_ids))

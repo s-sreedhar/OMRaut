@@ -2,6 +2,7 @@
 import os
 
 import pytest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -565,3 +566,73 @@ def test_new_test_validation_with_no_subjects_and_class_subject_management(tmp_p
     assert updated["sets"]["B"]["question_subjects"]["1"] == "Physics"
     keys._changed = False
     keys.close()
+
+
+# ---------------------------------------------------------------- deleting tests and subject drop-downs
+def test_delete_test_removes_its_data_but_keeps_roster_and_other_tests(tmp_path):
+    from omr_exam.database import Repository
+    from omr_exam.scan_job import process_scan_batch
+
+    config, paths = _scan_fixture(tmp_path, [[], []])
+    db = tmp_path / "data" / "omr.sqlite3"
+    db.parent.mkdir()
+    repo = Repository(db)
+    keep_id = repo.save_test(build_from_template(TEMPLATES[0], title="Keep me", class_name="9A", subject="Maths"))
+    test_id = repo.save_test(config)
+    repo.save_student("000001", "Asha", "9A")
+    outcome = process_scan_batch(repo, db, test_id, config, [str(p) for p in paths])
+    assert repo.test_usage(test_id) == {"batches": 1, "sheets": 2}
+    previews = [r["preview_path"] for r in repo.results_for_batch(outcome.batch_id) if r["preview_path"]]
+
+    assert repo.delete_test(test_id) == {"batches": 1, "sheets": 2}
+    assert [t["id"] for t in repo.tests()] == [keep_id]
+    assert repo.batches(test_id) == [] and repo.students()
+    assert all(not Path(p).exists() for p in previews)
+    assert all(p.exists() for p in paths)               # the user's own scans are never deleted
+    with pytest.raises(KeyError):
+        repo.delete_test(test_id)
+
+
+def test_delete_test_button_confirms_and_selects_another_test(tmp_path, monkeypatch):
+    import omr_exam.ui as ui
+
+    _app, window = _window(tmp_path)
+    window.show()
+    first = window.repo.save_test(build_from_template(TEMPLATES[0], title="First", class_name="9A", subject="Maths"))
+    second = window.repo.save_test(build_from_template(TEMPLATES[0], title="Second", class_name="9A", subject="Maths"))
+    window.refresh_tests(second)
+    assert window.delete_test_button.isEnabled() and window.active_test_id == second
+
+    monkeypatch.setattr(ui, "confirm", lambda *_a, **_k: False)
+    window.delete_test()
+    assert [t["id"] for t in window.repo.tests()] == [second, first]        # cancelled: nothing removed
+
+    monkeypatch.setattr(ui, "confirm", lambda *_a, **_k: True)
+    window.delete_test()
+    assert [t["id"] for t in window.repo.tests()] == [first] and window.active_test_id == first
+    window.delete_test()
+    assert window.repo.tests() == [] and window.active_test_id is None
+    assert not window.delete_test_button.isEnabled()
+    window.close()
+
+
+def test_subject_cell_dropdown_opens_immediately_and_never_changes_value_unless_chosen(tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+    from omr_exam.widgets import SubjectDelegate
+
+    app = QApplication.instance() or QApplication([])
+    table = QTableWidget(1, 1)
+    delegate = SubjectDelegate(["Physics", "Chemistry"], table)
+    table.setItemDelegate(delegate)
+    table.setItem(0, 0, QTableWidgetItem(""))
+    index = table.model().index(0, 0)
+    editor = delegate.createEditor(table, None, index)
+    delegate.setEditorData(editor, index)
+    assert editor.currentIndex() == -1 and editor.view().objectName() == "comboList"
+    delegate.setModelData(editor, table.model(), index)             # clicking away without choosing
+    assert table.item(0, 0).text() == ""
+    editor.setCurrentIndex(1)
+    delegate.setModelData(editor, table.model(), index)
+    assert table.item(0, 0).text() == "Chemistry"
+    editor.deleteLater()

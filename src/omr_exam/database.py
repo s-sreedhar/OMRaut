@@ -289,6 +289,40 @@ class Repository:
             self._merge_reference_values(db, "subjects", list(config["test"].get("subjects", [])))
             return int(cursor.lastrowid)
 
+    def test_usage(self, test_id: int) -> dict[str, int]:
+        """How much saved work belongs to a test (shown before it is deleted)."""
+        with _database_connection(self.path) as db:
+            batches = db.execute("SELECT COUNT(*) FROM batches WHERE test_id=?", (test_id,)).fetchone()[0]
+            sheets = db.execute("SELECT COUNT(*) FROM results WHERE batch_id IN (SELECT id FROM batches WHERE test_id=?)",
+                                (test_id,)).fetchone()[0]
+        return {"batches": int(batches), "sheets": int(sheets)}
+
+    def delete_test(self, test_id: int) -> dict[str, int]:
+        """Delete a test with its scan batches, results, corrections and audit history, in one transaction.
+
+        The student roster, classes, subjects and the original scanned image files are never touched."""
+        usage = self.test_usage(test_id)
+        with _database_connection(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM tests WHERE id=?", (test_id,)).fetchone() is None:
+                raise KeyError(f"Test {test_id} not found")
+            previews = [row[0] for row in db.execute(
+                "SELECT preview_path FROM results WHERE preview_path<>'' AND batch_id IN (SELECT id FROM batches WHERE test_id=?)",
+                (test_id,))]
+            db.execute("DELETE FROM batches WHERE test_id=?", (test_id,))      # results, logs, drafts and audits cascade
+            db.execute("DELETE FROM tests WHERE id=?", (test_id,))
+            db.execute("DELETE FROM app_settings WHERE key='last_test_id' AND value=?", (str(test_id),))
+            db.commit()
+        preview_root = (Path(self.path).parent / "previews").resolve()
+        for raw in previews:                    # only the app's own generated previews, never user scans
+            try:
+                target = Path(raw).resolve()
+                if preview_root in target.parents and target.is_file():
+                    target.unlink()
+            except OSError:
+                pass
+        return usage
+
     def get_setting(self, key: str, default: str = "") -> str:
         with _database_connection(self.path) as db:
             row = db.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()

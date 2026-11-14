@@ -78,7 +78,7 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
         institute_name = (institute or config["test"].get("institute", "") or "QualifyIAS").strip()
         header_right = layout.width - 18.0
         if logo_reader is not None:
-            box_w, box_h = 22.0, 15.0
+            box_w, box_h = 22.0, 10.5
             px, py = xy(header_right - box_w, 12.5 + box_h)
             pdf.drawImage(logo_reader, px, py, box_w * MM, box_h * MM, preserveAspectRatio=True, anchor="ne", mask="auto")
             header_right -= box_w + 4.0
@@ -115,7 +115,7 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
         pdf.drawString(px, py, "OMR ANSWER SHEET")
         details = [institute_name, config["test"]["title"], config["test"]["class"],
                    ", ".join(config["test"]["subjects"]), config["test"]["date"]]
-        header_line("  |  ".join(details), 22.0, 7.5, "Helvetica")
+        header_line("  |  ".join(details), 19.5, 7.5, "Helvetica")
 
         # Handwritten identity areas are deliberately not interpreted by the reader.
         for field, x, y in layout.identity_labels:
@@ -127,25 +127,26 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
                     width = class_label_x - 7.0 - box_x
                 else:
                     width = layout.width - 18.0 - box_x
-                box(box_x, y - 7.0, width, 12.0, stroke=ACCENT_LINE, line_width=0.9)
+                box(box_x, y - 5.5, width, 10.0, stroke=ACCENT_LINE, line_width=0.9)
                 # The reference form asks candidates to print names in block
                 # letters. Internal guides keep handwriting aligned and legible.
                 cells = 22 if field == "NAME" else 8
                 pdf.setStrokeColor(ACCENT_LINE)
                 pdf.setLineWidth(0.3)
                 for cell in range(1, cells):
-                    px, py = xy(box_x + width * cell / cells, y - 7.0)
-                    pdf.line(px, py, px, py - 12.0 * MM)
+                    px, py = xy(box_x + width * cell / cells, y - 5.5)
+                    pdf.line(px, py, px, py - 10.0 * MM)
             elif field == "ROLL NUMBER":
-                text(field, x, y, 6.5)
+                text(field, x + 2.5, y, 6.5)        # inset so the label never touches the panel border
             elif field == "SET":
-                text("TEST SET", x, y, 6.5)
+                text("TEST SET", x + 2.5, y, 6.5)
 
         # Box the ID marks and provide short, readable filling instructions.
         roll_digits = int(config["sheet"]["roll_number_digits"])
-        roll_x = 48.0
-        roll_pitch = min(8.0, (layout.width - 18.0 - roll_x) / max(1, roll_digits))
-        roll_right = roll_x + (roll_digits - 1) * roll_pitch + 5.0
+        # Take the digit columns from the shared layout so labels always sit on their bubbles.
+        roll_cols = sorted({float(b.x) for b in layout.bubbles if b.group == "roll"})
+        roll_x = roll_cols[0] if roll_cols else 48.0
+        roll_right = (roll_cols[-1] if roll_cols else roll_x) + 5.0
         # End the roll-number panel above the set row; their outlines used to
         # overlap even though the bubbles themselves were separate.
         box(17.5, 37.0, roll_right - 17.5, 49.0, stroke=ACCENT_LINE, line_width=0.7)
@@ -160,22 +161,22 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
             instructions = ("Fill one bubble per question using a dark pen.",
                             "Keep marks inside the circles; erase changes cleanly.",
                             "Keep the sheet flat and all corner marks visible.")
+            fit = 5.3                       # shrink, never overflow, on narrow sheets
+            while fit > 4.0 and max(pdf.stringWidth(f"3. {t}", "Helvetica", fit) for t in instructions) > (instruction_width - 6.0) * MM:
+                fit -= 0.2
             for index, instruction in enumerate(instructions):
-                text(f"{index + 1}. {instruction}", instruction_x + 3, 49.0 + index * 6.0, 5.3)
+                text(f"{index + 1}. {instruction}", instruction_x + 3, 49.0 + index * 6.0, fit)
         if len(config["sheet"]["set_codes"]) > 1:
             # Leave a visible gutter between roll digits, set bubbles, and Q1.
-            box(17.5, 87.0, min(83.0, layout.width - 36.0), 7.5, stroke=ACCENT_LINE, line_width=0.7)
+            box(17.5, 87.0, min(83.0, layout.width - 36.0), 7.0, stroke=ACCENT_LINE, line_width=0.7)
         # Print the digit column headings (0-9) beside the roll number grid.
-        for position in range(roll_digits):
-            x = roll_x + position * roll_pitch
+        for position, x in enumerate(roll_cols):
             text(str(position + 1), x - 0.7, 42, 5)
             for digit in range(10):
                 text(str(digit), x - 3.2, 47.0 + digit * 4.1, 4)
         for code in config["sheet"]["set_codes"] if len(config["sheet"]["set_codes"]) > 1 else ():
             bubble = next(b for b in layout.bubbles if b.group == "set" and b.value == str(code))
             text(str(code), bubble.x - 1.0, bubble.y - 2, 5)
-        for option, x, y in layout.option_labels:
-            text(option, x - 0.8, y, 5)
         question_centres: dict[int, float] = {}
         for bubble in layout.bubbles:
             if bubble.group == "answer":
@@ -191,15 +192,17 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
             if not question_ids:
                 continue
             centres = [question_centres[qid] for qid in question_ids]
-            top, bottom = min(centres) - 4.5, max(centres) + 4.5
+            top, bottom = min(centres) - 4.8, max(centres) + 4.5
             x0 = margin + column * col_width
             for row_index, qid in enumerate(question_ids):
                 if row_index % 2 == 0:
-                    stripe_height = min(5.2, pitch_y * 0.62)
+                    stripe_height = min(4.8, pitch_y * 0.62)
                     px, py = xy(x0 + 0.25, question_centres[qid] + stripe_height / 2)
                     pdf.setFillColor(ROW_PALE)
                     pdf.rect(px, py, (col_width - 0.5) * MM, stripe_height * MM, stroke=0, fill=1)
             box(x0, top, col_width, bottom - top, stroke=ACCENT_LINE, line_width=0.65)
+        for option, x, y in layout.option_labels:      # drawn after the row stripes so they are never covered
+            text(option, x - 0.8, y, 5)
         for question_label, x, y in layout.question_labels:
             text(question_label, x + 1.4, y, 6)
         pdf.setStrokeColor(black)

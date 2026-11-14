@@ -205,7 +205,7 @@ QPushButton#chip:hover {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; col
 QPushButton#chip:checked, QPushButton#chip[active="true"] {{ background: {ACCENT_SOFT}; border: 2px solid {ACCENT}; color: {ACCENT_DARK}; padding: 2px 10px; }}
 QSpinBox, QDoubleSpinBox, QDateEdit {{ padding: 7px 26px 7px 11px; }}
 QAbstractSpinBox QLineEdit, QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; min-height: 0; }}
-QComboBox {{ padding-right: 28px; }}
+QComboBox {{ padding-right: 28px; combobox-popup: 0; }}
 QComboBox::drop-down {{ border-left: 1px solid {FIELD_BORDER}; width: 30px; margin: 2px 2px 2px 0;
     subcontrol-origin: padding; subcontrol-position: center right; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }}
 QComboBox::down-arrow {{ image: url({assets["chevron-down"]}); width: 14px; height: 14px; }}

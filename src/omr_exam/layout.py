@@ -93,7 +93,7 @@ def create_layout(config: dict[str, Any]) -> SheetLayout:
             x = x0 + option_start + oi * 5.5
             bubbles.append(Bubble("answer", str(number), option, x, y))
             if row == 0:
-                olabs.append((option, x, start_y - 3.0))
+                olabs.append((option, x, start_y - 2.3))
     # Candidate roll number: ten one-of-ten digit rows, one for every position.
     ry = 43.0
     identity: list[tuple[str, float, float]] = [("ROLL NUMBER", margin, ry)]

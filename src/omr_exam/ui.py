@@ -626,9 +626,13 @@ class MainWindow(QMainWindow):
         self.scan_button = button("Scan sheets for this test", lambda: self.show_page("scan"), "", "scan")
         self.export_config_button = button("Export exam file", self.export_config, "ghost", "download",
                                            "Save this test as JSON to reuse it on another computer")
+        self.delete_test_button = button("Delete this test", self.delete_test, "danger", "trash",
+                                         "Permanently remove this test and its scan results")
         for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button):
             dl.addWidget(action)
         dl.addStretch(1)
+        dl.addWidget(divider())
+        dl.addWidget(self.delete_test_button)
         split.addWidget(detail)
         layout.addLayout(split, 1)
         return page
@@ -659,10 +663,9 @@ class MainWindow(QMainWindow):
         self.test_combo.clear()
         for item in tests:
             self.test_combo.addItem(item["title"], item["id"])
-        if select_id is not None:
-            index = self.test_combo.findData(select_id)
-            if index >= 0:
-                self.test_combo.setCurrentIndex(index)
+        # Keep the current test selected when it still exists; otherwise fall back to the newest one.
+        index = self.test_combo.findData(select_id if select_id is not None else self.active_test_id)
+        self.test_combo.setCurrentIndex(index if index >= 0 else (0 if tests else -1))
         self.test_combo.blockSignals(False)
         self.test_combo.setEnabled(bool(tests) and self._scan_worker is None)
         if not tests:
@@ -703,7 +706,7 @@ class MainWindow(QMainWindow):
         if self.batch_id is None:
             self.review_page.clear_batch()
         has_test = self.config is not None
-        for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button):
+        for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button, self.delete_test_button):
             action.setEnabled(has_test)
         if self.config:
             c = self.config
@@ -842,6 +845,36 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             alert(self, "The answer key could not be saved", str(exc), "bad")
             return False
+
+    def delete_test(self):
+        if self.active_test_id is None or not self.config:
+            alert(self, "No test selected", "Select the test you want to delete first.")
+            return
+        if self._scan_worker is not None:
+            alert(self, "A scan is running", "Wait for the scan to finish (or cancel it) before deleting a test.", "warn")
+            return
+        test_id, title = self.active_test_id, self.config["test"]["title"]
+        try:
+            usage = self.repo.test_usage(test_id)
+        except Exception as exc:
+            alert(self, "Could not delete the test", str(exc), "bad")
+            return
+        saved = (f"<br><br>This also deletes <b>{usage['batches']}</b> scan batch{'es' if usage['batches'] != 1 else ''} "
+                 f"with <b>{usage['sheets']}</b> sheet result{'s' if usage['sheets'] != 1 else ''} and any corrections you made."
+                 if usage["batches"] else "")
+        if not confirm(self, f"Delete “{title}”?",
+                       "The test, its answer key and settings will be removed. This cannot be undone. "
+                       "Your student list and original scan files are not touched." + saved
+                       + "<br><br>Tip: use <b>Export exam file</b> first to keep a copy of the test.",
+                       "Delete test", "Keep test", danger=True):
+            return
+        try:
+            self.repo.delete_test(test_id)
+        except Exception as exc:
+            alert(self, "Could not delete the test", str(exc), "bad")
+            return
+        self.refresh_tests()
+        self.toast(f"Deleted “{title}”")
 
     def export_config(self):
         if not self.config:

@@ -1177,21 +1177,31 @@ class SubjectDelegate(TintDelegate):
             painter.restore()
 
     def createEditor(self, parent, _option, _index):  # noqa: N802
-        from PySide6.QtWidgets import QComboBox
+        from PySide6.QtWidgets import QComboBox, QListView
 
-        combo = QComboBox(parent)
-        combo.addItems(self.subjects)
-        combo.activated.connect(lambda _idx, c=combo: (self.commitData.emit(c), self.closeEditor.emit(c, QStyledItemDelegate.NoHint)))
-        return combo
+        editor = QComboBox(parent)
+        view = QListView()
+        view.setObjectName("comboList")
+        editor.setView(view)
+        editor.setMaxVisibleItems(10)
+        # Fit the table row (the default field padding is taller than a cell) and keep the list under the cell.
+        editor.setStyleSheet("QComboBox { padding: 1px 30px 1px 8px; min-height: 0; border-radius: 4px; }"
+                             "QComboBox::drop-down { margin: 1px; }")
+        editor.addItems(self.subjects)
+        editor.setCurrentIndex(-1)
+        editor.setPlaceholderText("Choose a subject")
+        editor.activated.connect(lambda _idx, c=editor: (self.commitData.emit(c), self.closeEditor.emit(c, QStyledItemDelegate.NoHint)))
+        # One click opens the list straight away, like a normal Windows drop-down.
+        QTimer.singleShot(0, editor.showPopup)
+        return editor
 
     def setEditorData(self, editor, index):  # noqa: N802
         value = str(index.data(Qt.EditRole) or "").strip()
-        idx = editor.findText(value, Qt.MatchFixedString)
-        if idx >= 0:
-            editor.setCurrentIndex(idx)
+        editor.setCurrentIndex(editor.findText(value, Qt.MatchFixedString))
 
     def setModelData(self, editor, model, index):  # noqa: N802
-        model.setData(index, editor.currentText(), Qt.EditRole)
+        if editor.currentIndex() >= 0:          # leaving the cell without choosing must not change it
+            model.setData(index, editor.currentText(), Qt.EditRole)
 
     def updateEditorGeometry(self, editor, option, _index):  # noqa: N802
         editor.setGeometry(option.rect)
