@@ -166,12 +166,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OMRaut")
         from omr_exam.icons import app_icon
         self.setWindowIcon(app_icon())
-        self.setMinimumSize(960, 620)
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
-            self.resize(min(1400, max(960, avail.width() - 40)), min(860, max(620, avail.height() - 40)))
+            min_w = min(840, max(640, avail.width() - 32))
+            min_h = min(540, max(440, avail.height() - 32))
+            self.setMinimumSize(min_w, min_h)
+            self.resize(min(1400, max(min_w, avail.width() - 40)), min(860, max(min_h, avail.height() - 40)))
         else:
+            self.setMinimumSize(840, 540)
             self.resize(1400, 860)
 
         self.pages = QStackedWidget()
@@ -596,7 +599,8 @@ class MainWindow(QMainWindow):
         split.addWidget(list_card, 1)
 
         detail, dl = card((20, 18, 20, 18), 12)
-        detail.setFixedWidth(400)
+        detail.setMinimumWidth(300)
+        detail.setMaximumWidth(400)
         dl.addWidget(label("SELECTED TEST", "eyebrow"))
         self.test_title_label = label("No test selected", "cardTitle")
         self.test_info = label("Create a test or import an exam file to get started.", "muted")
@@ -1528,7 +1532,7 @@ class MainWindow(QMainWindow):
         split.addWidget(detail)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
-        split.setMinimumHeight(720)
+        split.setMinimumHeight(540)
         layout.addWidget(split, 1)
         return _scrollable(page)
 

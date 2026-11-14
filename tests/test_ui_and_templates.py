@@ -534,6 +534,13 @@ def test_new_test_validation_with_no_subjects_and_class_subject_management(tmp_p
 
     config = build_from_template(TEMPLATES[1], title="Multi Set", class_name="10A", subjects=["Physics"], question_count=4)
     keys = AnswerKeyDialog(config, available_subjects=["Physics", "Chemistry"])
+    keys.show()
+    keys.resize(960, 560)
+    keys.table.setCurrentCell(0, 2)
+    keys.table.repaint()
+    app.processEvents()
+    assert keys.save_button.isVisible()
+    assert keys.save_button.mapTo(keys, keys.save_button.rect().bottomRight()).y() <= keys.height()
     assert keys.available_subjects == ["Physics", "Chemistry"]
     # Excel-style fill-down on the Subject column (col 2) for Set A:
     keys.table.item(0, 2).setText("Chemistry")

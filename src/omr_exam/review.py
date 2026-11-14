@@ -281,7 +281,7 @@ class ReviewPage(QWidget):
     def _build_sheet_view(self) -> QWidget:
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
-        workspace_splitter = QSplitter(Qt.Vertical)
+        workspace_splitter = QSplitter(Qt.Horizontal)
         workspace_splitter.setChildrenCollapsible(False)
 
         # -- queue
@@ -308,7 +308,7 @@ class ReviewPage(QWidget):
         self.queue_empty.setContentsMargins(12, 24, 12, 24)
         self.queue_empty.hide()
         ql.addWidget(self.queue_empty)
-        queue_card.setMinimumWidth(230)
+        queue_card.setMinimumWidth(180)
         splitter.addWidget(queue_card)
 
         # -- viewer
@@ -349,6 +349,7 @@ class ReviewPage(QWidget):
             legend.addLayout(pair)
         legend.addStretch(1)
         vl.addLayout(legend)
+        viewer_card.setMinimumWidth(260)
         workspace_splitter.addWidget(viewer_card)
 
         # -- inspector
@@ -392,15 +393,15 @@ class ReviewPage(QWidget):
         keys.setColumnStretch(3, 1)
         foot.addLayout(keys)
         il.addLayout(foot)
-        inspector_card.setMinimumWidth(0)
+        inspector_card.setMinimumWidth(260)
         workspace_splitter.addWidget(inspector_card)
-        workspace_splitter.setStretchFactor(0, 1)
-        workspace_splitter.setStretchFactor(1, 1)
-        workspace_splitter.setSizes([440, 520])
+        workspace_splitter.setStretchFactor(0, 3)
+        workspace_splitter.setStretchFactor(1, 2)
+        workspace_splitter.setSizes([520, 380])
         splitter.addWidget(workspace_splitter)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([250, 1050])
+        splitter.setSizes([210, 960])
         return splitter
 
     def _build_grid_view(self) -> QWidget:

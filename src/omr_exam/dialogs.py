@@ -42,11 +42,14 @@ def _footer(layout: QVBoxLayout) -> QHBoxLayout:
 
 def _fit_dialog(dialog: QDialog, width: int, height: int) -> None:
     """Resize a dialog while keeping it inside the available screen geometry."""
-    screen = dialog.screen() or QGuiApplication.primaryScreen()
+    screen = dialog.screen() or (dialog.parentWidget().screen() if dialog.parentWidget() is not None else None) or QGuiApplication.primaryScreen()
     if screen is not None:
         avail = screen.availableGeometry()
-        width = min(width, max(640, avail.width() - 48))
-        height = min(height, max(520, avail.height() - 48))
+        max_w = max(560, avail.width() - 24)
+        max_h = max(420, avail.height() - 24)
+        dialog.setMaximumSize(max_w, max_h)
+        width = min(width, max(560, avail.width() - 40))
+        height = min(height, max(420, avail.height() - 40))
     dialog.resize(width, height)
 
 
@@ -508,10 +511,15 @@ class SetSubjectsDialog(AppDialog):
         range_row.addWidget(self.from_q)
         range_row.addWidget(_label("To Q:", "hint", wrap=False))
         range_row.addWidget(self.to_q)
-        range_row.addWidget(button("Apply to set", lambda: self._apply_range(all_sets=False), "primary"))
-        if len(self.codes) > 1:
-            range_row.addWidget(button("Apply to all sets", lambda: self._apply_range(all_sets=True), "ghost"))
         self.body.addLayout(range_row)
+
+        apply_row = QHBoxLayout()
+        apply_row.setSpacing(8)
+        apply_row.addStretch(1)
+        apply_row.addWidget(button("Apply to set", lambda: self._apply_range(all_sets=False), "primary"))
+        if len(self.codes) > 1:
+            apply_row.addWidget(button("Apply to all sets", lambda: self._apply_range(all_sets=True), "ghost"))
+        self.body.addLayout(apply_row)
 
         self.table = ExcelFillTable(len(self.question_ids), 2, self, editable_from_col=1)
         self.table.setHorizontalHeaderLabels(["Question", "Subject"])
@@ -521,7 +529,7 @@ class SetSubjectsDialog(AppDialog):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setItemDelegateForColumn(1, SubjectDelegate(self.subjects, self.table))
-        self.table.setMinimumHeight(320)
+        self.table.setMinimumHeight(200)
         self.table.itemChanged.connect(self._on_item_changed)
         self.body.addWidget(self.table, 1)
         self.body.addWidget(_label("Tip: Click a Subject cell for dropdown, drag the cell corner or press Ctrl+D to fill down.", "hint"))
@@ -674,8 +682,16 @@ class AnswerKeyDialog(QDialog):
                             self.edit_set_subjects, "ghost", "settings"))
         sv.addWidget(button("Clear the key" if self.single else "Clear this set", self.clear_set, "ghost", "trash"))
 
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        side_scroll.setFixedWidth(356)
+        side_scroll.setWidget(side)
+
+        self.table.setMinimumHeight(180)
         body = QHBoxLayout(); body.setSpacing(14)
-        body.addWidget(self.table, 1); body.addWidget(side)
+        body.addWidget(self.table, 1); body.addWidget(side_scroll)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
         top = QVBoxLayout(); top.setContentsMargins(24, 20, 24, 16); top.setSpacing(6)
         top.addWidget(_label("Answer key", "pageTitle"))

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QFrame, QGraphicsScene, QGraphicsView, QHBoxLayout, QHeaderView, QLabel,
@@ -1035,9 +1035,19 @@ class AppDialog(QDialog):
     def __init__(self, parent: QWidget | None, title: str, subtitle: str = "", icon_name: str = "", tone: str = "info",
                  width: int = 480):
         super().__init__(parent)
+        from PySide6.QtGui import QGuiApplication
+
         self.setWindowTitle(title)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.setMinimumWidth(width)
+        screen = self.screen() or (parent.screen() if parent is not None else None) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            target_w = min(width, max(360, avail.width() - 36))
+            self.setMinimumWidth(min(360, target_w))
+            self.resize(target_w, self.sizeHint().height())
+            self.setMaximumSize(max(360, avail.width() - 16), max(320, avail.height() - 16))
+        else:
+            self.setMinimumWidth(width)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1061,6 +1071,7 @@ class AppDialog(QDialog):
         self.body.setContentsMargins(22, 10, 22, 6)
         self.body.setSpacing(10)
         outer.addLayout(self.body, 1)
+        outer.addWidget(divider())
         foot = QFrame()
         foot.setObjectName("dialogFoot")
         self.buttons = QHBoxLayout(foot)
