@@ -637,6 +637,39 @@ def test_subject_analysis_matches_section_subject_hand_calculation(tmp_path):
         assert len(list(csv.DictReader(handle))) == 2
 
 
+def test_subject_analysis_respects_per_set_subject_definitions(tmp_path):
+    from omr_exam.reports import (export_assessment_pdf, export_candidate_response_pdf,
+                                  export_subject_score_list_pdf, export_subsection_pdf)
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    config["test"]["subjects"] = ["Math", "Science"]
+    config["test"]["sections"] = [
+        {"title": "Algebra", "subject": "Math", "question_start": 1, "question_end": 2},
+        {"title": "Physics", "subject": "Science", "question_start": 3, "question_end": 5},
+    ]
+    for question in config["questions"]:
+        question["section"] = "Algebra" if int(question["id"]) <= 2 else "Physics"
+    # Set B flips the order: Q1-3 are Science, Q4-5 are Math.
+    config["sets"]["B"]["question_subjects"] = {"1": "Science", "2": "Science", "3": "Science", "4": "Math", "5": "Math"}
+    validate_config(config)
+
+    records = [
+        # Set A: Q1-2 Math (both right = +8), Q3-5 Science (Q3 right = +4, Q4 wrong = -1, Q5 wrong = -1 => +2)
+        {"roll_number": "000001", "set_code": "A", "answers": {"1": "B", "2": "A", "3": "D", "4": "C", "5": "B"}, "review_required": False},
+        # Set B: answer key for B is 1:A, 2:D, 3:C, 4:B, 5:A.
+        # Q1-3 Science (all right = +12), Q4-5 Math (Q4 wrong = -1, Q5 right = +4 => +3)
+        {"roll_number": "000002", "set_code": "B", "answers": {"1": "A", "2": "D", "3": "C", "4": "A", "5": "A"}, "review_required": False},
+    ]
+    rows = subject_analysis(config, records)
+    assert rows == [
+        {"subject": "Math", "question_count": 2, "student_count": 2, "average_points_per_student": 5.5},
+        {"subject": "Science", "question_count": 3, "student_count": 2, "average_points_per_student": 12.0},
+    ]
+    assert export_subject_score_list_pdf(config, records, tmp_path / "sub_list.pdf").read_bytes().startswith(b"%PDF-")
+    assert export_assessment_pdf(config, records, tmp_path / "assess.pdf").read_bytes().startswith(b"%PDF-")
+    assert export_candidate_response_pdf(config, records, tmp_path / "resp.pdf").read_bytes().startswith(b"%PDF-")
+    assert export_subsection_pdf(config, records, tmp_path / "subsec.pdf").read_bytes().startswith(b"%PDF-")
+
+
 def test_excel_workbook_includes_result_and_analysis_tabs(tmp_path):
     openpyxl = pytest.importorskip("openpyxl")
     config = load_config(ROOT / "examples" / "sample-test.json")

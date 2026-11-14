@@ -202,6 +202,47 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "title",
+                "subject",
+                "question_start",
+                "question_end"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "subject": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "question_start": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "question_end": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "topic": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "question_subjects": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }

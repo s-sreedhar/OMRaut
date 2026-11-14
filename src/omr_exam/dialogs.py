@@ -21,8 +21,8 @@ from omr_exam.ingest import scan_pages
 from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
 from omr_exam.theme import BAD_BG, GOOD_BG
-from omr_exam.widgets import (AppDialog, Banner, ChoiceDelegate, PillDelegate, Segmented, SuggestField, TintDelegate, alert, ask_text,
-                              button, confirm, divider, grid_table, label, table)
+from omr_exam.widgets import (AppDialog, Banner, ChoiceDelegate, ExcelFillTable, PillDelegate, Segmented, SubjectDelegate,
+                              SuggestField, TintDelegate, alert, ask_text, button, card, confirm, divider, grid_table, label, table)
 
 IMAGE_TYPES = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;All files (*.*)"
 
@@ -54,7 +54,7 @@ class NewTestDialog(QDialog):
     """Pick a template, name the test, done. Everything else is optional under 'Customize'."""
 
     def __init__(self, parent=None, classes: list[str] | None = None, subjects: list[str] | None = None,
-                 manage_subjects=None):
+                 manage_subjects=None, manage_classes=None, edit_class=None, edit_subject=None):
         super().__init__(parent)
         self.setWindowTitle("Create a new test")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
@@ -62,12 +62,20 @@ class NewTestDialog(QDialog):
         self.template: TestTemplate = TEMPLATES[2]
 
         self.title = QLineEdit(); self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
-        self.class_name = SuggestField(classes or [], "e.g. 10A")
+        self.edit_class_handler = edit_class
+        self.edit_subject_handler = edit_subject
+        self.class_name = SuggestField(classes or [], "e.g. 10A", on_edit=self._edit_class_pill if edit_class else None)
         self.subject_options = sorted({str(value).strip() for value in (subjects or []) if str(value).strip()}, key=str.casefold)
         self.manage_subjects_handler = manage_subjects
+        self.manage_classes_handler = manage_classes
         self.subject_list = QListWidget(); self.subject_list.setObjectName("checkList")
         self.subject_list.setMinimumHeight(72); self.subject_list.setMaximumHeight(116)
         self.subject_list.setAccessibleName("Subjects included in this test")
+        if edit_subject is not None:
+            self.subject_list.setToolTip("Check to select · Double-click or right-click a subject to edit/update")
+            self.subject_list.itemDoubleClicked.connect(self._edit_subject_item)
+            self.subject_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.subject_list.customContextMenuRequested.connect(self._subject_context_menu)
         self._populate_subjects()
         self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(False); self.date.setDisplayFormat("d MMM yyyy")
 
@@ -124,9 +132,15 @@ class NewTestDialog(QDialog):
         root.addSpacing(4)
         root.addWidget(_label("2 · NAME YOUR TEST", "eyebrow"))
         form = QGridLayout(); form.setHorizontalSpacing(14); form.setVerticalSpacing(4)
-        for column, (caption, widget) in enumerate((("Test title", self.title), ("Class", self.class_name),
-                                                    ("Date", self.date))):
-            form.addWidget(_label(caption, "hint"), 0, column)
+        form.addWidget(_label("Test title", "hint"), 0, 0)
+        class_heading = QHBoxLayout(); class_heading.setContentsMargins(0, 0, 0, 0)
+        class_heading.addWidget(_label("Class", "hint"))
+        class_heading.addStretch(1)
+        if self.manage_classes_handler is not None:
+            class_heading.addWidget(button("Manage classes", self._manage_classes, "ghost", "settings"))
+        form.addLayout(class_heading, 0, 1)
+        form.addWidget(_label("Date", "hint"), 0, 2)
+        for column, widget in enumerate((self.title, self.class_name, self.date)):
             form.addWidget(widget, 1, column)
         form.setColumnStretch(0, 5); form.setColumnStretch(1, 3); form.setColumnStretch(2, 2)
         root.addLayout(form)
@@ -235,6 +249,56 @@ class NewTestDialog(QDialog):
     def _subjects_changed(self, _item):
         self._clear_invalid(self.subject_list)
         self._update_summary()
+
+    def _edit_class_pill(self, old: str):
+        if self.edit_class_handler is None:
+            return
+        new_name, accepted = QInputDialog.getText(self, "Edit / Update class", "Class name:", text=old)
+        if not accepted or not new_name.strip() or new_name.strip() == old:
+            return
+        try:
+            updated = self.edit_class_handler(old, new_name.strip())
+            if updated is not None:
+                self.class_name.set_suggestions(updated)
+            if self.class_name.text().strip().casefold() == old.casefold():
+                self.class_name.setText(new_name.strip())
+        except Exception as exc:
+            alert(self, "Could not update class", str(exc), "bad")
+
+    def _subject_context_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+
+        item = self.subject_list.itemAt(pos)
+        if item is None or self.edit_subject_handler is None:
+            return
+        menu = QMenu(self.subject_list)
+        menu.addAction(f"Edit / Update '{item.text()}'", lambda: self._edit_subject_item(item))
+        menu.exec(self.subject_list.mapToGlobal(pos))
+
+    def _edit_subject_item(self, item: QListWidgetItem):
+        if self.edit_subject_handler is None or item is None:
+            return
+        old = item.text()
+        new_name, accepted = QInputDialog.getText(self, "Edit / Update subject", "Subject name:", text=old)
+        if not accepted or not new_name.strip() or new_name.strip() == old:
+            return
+        try:
+            previous = self.selected_subjects()
+            updated = self.edit_subject_handler(old, new_name.strip())
+            if updated is not None:
+                self.subject_options = sorted({str(value).strip() for value in updated if str(value).strip()}, key=str.casefold)
+            selected = [new_name.strip() if value.casefold() == old.casefold() else value for value in previous]
+            self._populate_subjects(selected)
+            self._update_summary()
+        except Exception as exc:
+            alert(self, "Could not update subject", str(exc), "bad")
+
+    def _manage_classes(self):
+        if self.manage_classes_handler is None:
+            return
+        updated = self.manage_classes_handler()
+        if updated is not None:
+            self.class_name.set_suggestions(updated)
 
     def _manage_subjects(self):
         if self.manage_subjects_handler is None:
@@ -383,7 +447,8 @@ class NewTestDialog(QDialog):
             missing.append((self.subject_list, "at least one subject"))
         if missing:
             for field, _name in missing:
-                theme.set_property(getattr(field, "edit", field), "invalid", "true")
+                target = field.edit if isinstance(field, SuggestField) else field
+                theme.set_property(target, "invalid", "true")
             self.form_error.setText(f"<span style='color:{theme.BAD}'>Please enter {', '.join(name for _f, name in missing)}.</span>")
             self.form_error.show()
             missing[0][0].setFocus()
@@ -403,25 +468,127 @@ def _AnswerDelegate(options: list[str], parent=None) -> ChoiceDelegate:
     return ChoiceDelegate(options, parent)
 
 
+def _default_set_subjects(config: dict[str, Any]) -> dict[str, dict[str, str]]:
+    from omr_exam.reports import _subject_for_question
+
+    codes = [str(code) for code in config["sheet"]["set_codes"]]
+    return {code: _subject_for_question(config, code) for code in codes}
+
+
+class SetSubjectsDialog(AppDialog):
+    """Assign subjects to question ranges or individual questions for each set."""
+
+    def __init__(self, subjects: list[str], codes: list[str], question_ids: list[int],
+                 set_subjects: dict[str, dict[str, str]], parent=None):
+        super().__init__(parent, "Define subjects per set",
+                         "Assign which subject each question belongs to in each set. Report analysis uses each student's set.",
+                         "settings", "info", width=620)
+        self.subjects = list(subjects)
+        self.codes = list(codes)
+        self.question_ids = list(question_ids)
+        self.set_subjects = {code: dict(set_subjects.get(code, {})) for code in self.codes}
+        self._loading = False
+
+        if len(self.codes) > 1:
+            self.set_picker = Segmented([(c, f"Set {c}") for c in self.codes])
+            self.set_picker.changed.connect(lambda _c: self._load_set())
+            self.body.addWidget(self.set_picker)
+        else:
+            self.set_picker = None
+
+        range_row = QHBoxLayout()
+        range_row.setSpacing(8)
+        self.subject_combo = QComboBox()
+        self.subject_combo.addItems(self.subjects)
+        self.from_q = QSpinBox(); self.from_q.setRange(1, max(self.question_ids)); self.from_q.setValue(1)
+        self.to_q = QSpinBox(); self.to_q.setRange(1, max(self.question_ids)); self.to_q.setValue(max(self.question_ids))
+        range_row.addWidget(_label("Subject:", "hint", wrap=False))
+        range_row.addWidget(self.subject_combo, 1)
+        range_row.addWidget(_label("From Q:", "hint", wrap=False))
+        range_row.addWidget(self.from_q)
+        range_row.addWidget(_label("To Q:", "hint", wrap=False))
+        range_row.addWidget(self.to_q)
+        range_row.addWidget(button("Apply to set", lambda: self._apply_range(all_sets=False), "primary"))
+        if len(self.codes) > 1:
+            range_row.addWidget(button("Apply to all sets", lambda: self._apply_range(all_sets=True), "ghost"))
+        self.body.addLayout(range_row)
+
+        self.table = ExcelFillTable(len(self.question_ids), 2, self, editable_from_col=1)
+        self.table.setHorizontalHeaderLabels(["Question", "Subject"])
+        grid_table(self.table)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setItemDelegateForColumn(1, SubjectDelegate(self.subjects, self.table))
+        self.table.setMinimumHeight(320)
+        self.table.itemChanged.connect(self._on_item_changed)
+        self.body.addWidget(self.table, 1)
+        self.body.addWidget(_label("Tip: Click a Subject cell for dropdown, drag the cell corner or press Ctrl+D to fill down.", "hint"))
+        self.add_button("Cancel", "", accept=False)
+        self.add_button("Save subjects", "primary", accept=True, default=True)
+        self._load_set()
+
+    def _active_code(self) -> str:
+        return self.set_picker.current() if self.set_picker is not None else self.codes[0]
+
+    def _apply_range(self, *, all_sets: bool):
+        start = min(self.from_q.value(), self.to_q.value())
+        end = max(self.from_q.value(), self.to_q.value())
+        subject = self.subject_combo.currentText()
+        targets = self.codes if all_sets else [self._active_code()]
+        for code in targets:
+            for qid in range(start, end + 1):
+                self.set_subjects[code][str(qid)] = subject
+        self._load_set()
+
+    def _load_set(self):
+        code = self._active_code()
+        mapping = self.set_subjects[code]
+        self._loading = True
+        for row, qid in enumerate(self.question_ids):
+            qitem = QTableWidgetItem(f"Q{qid}")
+            qitem.setFlags(qitem.flags() & ~Qt.ItemIsEditable)
+            qitem.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, 0, qitem)
+            current = mapping.get(str(qid), self.subjects[0] if self.subjects else "")
+            self.table.setItem(row, 1, QTableWidgetItem(current))
+        self._loading = False
+
+    def _on_item_changed(self, item: QTableWidgetItem):
+        if not self._loading and item.column() == 1 and item.text().strip():
+            qid = str(self.question_ids[item.row()])
+            self.set_subjects[self._active_code()][qid] = item.text().strip()
+
+
 class AnswerKeyDialog(QDialog):
     """Type, paste, import, or scan the answer key for each set; mistakes are highlighted live."""
 
-    def __init__(self, config: dict[str, Any], parent=None):
+    def __init__(self, config: dict[str, Any], parent=None, *, available_subjects: list[str] | None = None):
         super().__init__(parent)
         self.config = config
         self.codes = [str(code) for code in config["sheet"]["set_codes"]]
         self.options = [str(o) for o in config["sheet"]["options"]]
         self.questions = config["questions"]
         self.dropped = {str(q) for q in config.get("scoring", {}).get("dropped_questions", [])}
+        self._set_subjects = _default_set_subjects(config)
+        merged_subjects: list[str] = []
+        seen_subjects: set[str] = set()
+        for value in [*(config["test"].get("subjects") or []), *(available_subjects or [])]:
+            clean = str(value).strip()
+            if clean and clean.casefold() not in seen_subjects:
+                seen_subjects.add(clean.casefold())
+                merged_subjects.append(clean)
+        self.available_subjects = merged_subjects
         self._loading = False
         self._changed = False
         self.setWindowTitle(f"Answer key - {config['test']['title']}")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        _fit_dialog(self, 1060, 740)
+        _fit_dialog(self, 1100, 740)
 
-        self.table = QTableWidget(len(self.questions), 2 + len(self.codes))
+        self.table = ExcelFillTable(len(self.questions), 3 + len(self.codes), self, editable_from_col=1)
         self.single = len(self.codes) == 1
-        self.table.setHorizontalHeaderLabels(["Q", "Topic (optional)"] + (["Answer"] if self.single else [f"Set {c}" for c in self.codes]))
+        self.table.setHorizontalHeaderLabels(["Q", "Topic (optional)", "Subject"] + (["Answer"] if self.single else [f"Set {c}" for c in self.codes]))
         grid_table(self.table)
         self.table.setItemDelegate(TintDelegate(self.table))
         self.table.verticalHeader().setDefaultSectionSize(34)
@@ -431,18 +598,23 @@ class AnswerKeyDialog(QDialog):
         header.setHighlightSections(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for column in range(2, 2 + len(self.codes)):
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        self.table.setColumnWidth(2, 150)
+        self.table.setItemDelegateForColumn(2, SubjectDelegate(self.available_subjects, self.table))
+        for column in range(3, 3 + len(self.codes)):
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             self.table.setColumnWidth(column, 84)
             self.table.setItemDelegateForColumn(column, _AnswerDelegate(self.options, self.table))
         self.table.verticalHeader().setVisible(False)
         self._loading = True
+        active_code = self.codes[0]
         for row, question in enumerate(self.questions):
             qitem = QTableWidgetItem(str(question["id"])); qitem.setFlags(qitem.flags() & ~Qt.ItemIsEditable)
             qitem.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 0, qitem)
             self.table.setItem(row, 1, QTableWidgetItem(str(question.get("topic", ""))))
-            for offset, code in enumerate(self.codes, 2):
+            self.table.setItem(row, 2, QTableWidgetItem(self._set_subjects.get(active_code, {}).get(str(question["id"]), "")))
+            for offset, code in enumerate(self.codes, 3):
                 item = QTableWidgetItem(str(config["sets"][code]["answer_key"].get(str(question["id"]), "")))
                 item.setTextAlignment(Qt.AlignCenter)
                 if str(question["id"]) in self.dropped:
@@ -458,6 +630,7 @@ class AnswerKeyDialog(QDialog):
         sv.addWidget(_label("Type the whole key", "cardTitle"))
         self.set_picker = Segmented([(c, f"Set {c}") for c in self.codes])
         self.set_picker.setAccessibleName("Set to fill")
+        self.set_picker.changed.connect(lambda _c: self._refresh_subject_column())
         self.set_picker_caption = _label("Fill which set?", "hint")
         sv.addWidget(self.set_picker_caption)
         sv.addWidget(self.set_picker)
@@ -473,7 +646,7 @@ class AnswerKeyDialog(QDialog):
         sv.addWidget(self.quick_error)
         self.quick.textChanged.connect(lambda _t: self.quick_error.hide())
         sv.addWidget(button("Fill the key" if self.single else "Fill this set", self.apply_quick, "primary", "check"))
-        sv.addWidget(_label("Or click a cell in the table and type the letter. It moves to the next question by itself.", "hint"))
+        sv.addWidget(_label("Tip: Drag any cell's corner handle or press Ctrl+D to fill down Topic/Subject like Excel.", "hint"))
         sv.addWidget(divider())
         sv.addWidget(_label("USE AN EXISTING KEY", "eyebrow"))
         for text, handler, icon_name in (("Paste from a spreadsheet", self.paste_key, "edit"),
@@ -497,6 +670,8 @@ class AnswerKeyDialog(QDialog):
             self.set_bars[code] = (bar, count)
         self.status = _label("", "hint")   # plain-text summary kept for screen readers and callers
         self.status.hide()
+        sv.addWidget(button("Define subjects per set" if not self.single else "Define question subjects",
+                            self.edit_set_subjects, "ghost", "settings"))
         sv.addWidget(button("Clear the key" if self.single else "Clear this set", self.clear_set, "ghost", "trash"))
 
         body = QHBoxLayout(); body.setSpacing(14)
@@ -519,18 +694,34 @@ class AnswerKeyDialog(QDialog):
         self._refresh_status()
         first_answer = next((row for row, question in enumerate(self.questions) if str(question["id"]) not in self.dropped), None)
         if first_answer is not None:
-            self.table.setCurrentCell(first_answer, 2)
+            self.table.setCurrentCell(first_answer, 3)
             QTimer.singleShot(0, self.table.setFocus)
 
     # --- helpers -------------------------------------------------------
     def _valid_options(self) -> set[str]:
         return {o.upper() for o in self.options}
 
+    def _refresh_subject_column(self):
+        code = self.codes[self._set_index()]
+        mapping = self._set_subjects.get(code, {})
+        self._loading = True
+        for row, question in enumerate(self.questions):
+            item = self.table.item(row, 2)
+            if item is not None:
+                item.setText(mapping.get(str(question["id"]), ""))
+        self._loading = False
+
     def _item_changed(self, item: QTableWidgetItem):
         if self._loading:
             return
         self._changed = True
-        if item.column() < 2:
+        if item.column() == 1:
+            return
+        if item.column() == 2:
+            qid = str(self.questions[item.row()]["id"])
+            value = item.text().strip()
+            if value:
+                self._set_subjects.setdefault(self.codes[self._set_index()], {})[qid] = value
             return
         self._loading = True
         item.setText(item.text().strip().upper())
@@ -545,7 +736,7 @@ class AnswerKeyDialog(QDialog):
                 QTimer.singleShot(0, lambda r=next_row, c=column: self.table.setCurrentCell(r, c))
 
     def _color(self, item: QTableWidgetItem):
-        if item.column() < 2 or item.text() in ("", "-"):
+        if item.column() < 3 or item.text() in ("", "-"):
             item.setBackground(QBrush())
         elif item.text() in self._valid_options():
             item.setBackground(QBrush(QColor(GOOD_BG)))
@@ -553,7 +744,7 @@ class AnswerKeyDialog(QDialog):
             item.setBackground(QBrush(QColor(BAD_BG)))
 
     def _set_column(self) -> int:
-        return 2 + self._set_index()
+        return 3 + self._set_index()
 
     def _set_index(self) -> int:
         return self.codes.index(self.set_picker.current()) if self.set_picker.current() in self.codes else 0
@@ -573,7 +764,7 @@ class AnswerKeyDialog(QDialog):
     def _refresh_status(self):
         needed = [row for row, q in enumerate(self.questions) if str(q["id"]) not in self.dropped]
         lines, complete = [], True
-        for offset, code in enumerate(self.codes, 2):
+        for offset, code in enumerate(self.codes, 3):
             filled = sum(1 for row in needed if self.table.item(row, offset).text() in self._valid_options())
             done = filled == len(needed)
             complete &= done
@@ -648,7 +839,7 @@ class AnswerKeyDialog(QDialog):
                 if unknown_topics:
                     raise ValueError(f"Unknown topic question number(s): {', '.join(sorted(unknown_topics))}")
                 for code, answers in pending.items():
-                    self._fill_column(2 + self.codes.index(code), answers)
+                    self._fill_column(3 + self.codes.index(code), answers)
                 self._loading = True
                 for row, question in enumerate(self.questions):
                     self.table.item(row, 1).setText(str(topics.get(str(question["id"]), question.get("topic", ""))))
@@ -679,7 +870,7 @@ class AnswerKeyDialog(QDialog):
     def export_json_key(self):
         try:
             keys = {}
-            for column, code in enumerate(self.codes, 2):
+            for column, code in enumerate(self.codes, 3):
                 answers = {str(question["id"]): self.table.item(row, column).text().strip()
                            for row, question in enumerate(self.questions)
                            if self.table.item(row, column).text().strip() not in {"", "-"}}
@@ -739,17 +930,36 @@ class AnswerKeyDialog(QDialog):
             return
         super().reject()
 
+    def edit_set_subjects(self):
+        subjects = list(self.available_subjects)
+        qids = [int(q["id"]) for q in self.questions]
+        dialog = SetSubjectsDialog(subjects, self.codes, qids, self._set_subjects, self)
+        if dialog.exec():
+            self._set_subjects = dialog.set_subjects
+            self._refresh_subject_column()
+            self._changed = True
+
     def updated_config(self, complete: bool = True) -> dict[str, Any]:
         updated = json.loads(json.dumps(self.config))
         for row, question in enumerate(updated["questions"]):
             question["topic"] = self.table.item(row, 1).text().strip()
-        for column, code in enumerate(self.codes, 2):
+        used_subjects = list(updated["test"].get("subjects", []))
+        seen_subjects = {s.strip().casefold() for s in used_subjects if s.strip()}
+        for column, code in enumerate(self.codes, 3):
             answers = {}
             for row, question in enumerate(updated["questions"]):
                 answer = self.table.item(row, column).text().strip()
                 if answer and answer != "-":
                     answers[str(question["id"])] = answer
             updated["sets"][code]["answer_key"] = validate_answer_key(updated, answers, complete=complete)
+            if self._set_subjects.get(code):
+                updated["sets"][code]["question_subjects"] = dict(self._set_subjects[code])
+                for subj in self._set_subjects[code].values():
+                    clean = str(subj).strip()
+                    if clean and clean.casefold() not in seen_subjects:
+                        seen_subjects.add(clean.casefold())
+                        used_subjects.append(clean)
+        updated["test"]["subjects"] = used_subjects
         validate_config(updated)
         return updated
 
@@ -757,35 +967,44 @@ class AnswerKeyDialog(QDialog):
 class ReferenceDataDialog(AppDialog):
     """Manage global class and subject names shared by student and test forms."""
 
-    def __init__(self, repo, parent=None):
-        super().__init__(parent, "Manage classes and subjects",
-                         "Reusable lists appear in student and test forms. Rename updates saved records; remove only hides a name from future choices.",
-                         "settings", "info", width=760)
+    def __init__(self, repo, parent=None, *, classes_only: bool = False, subjects_only: bool = False):
+        title = "Manage classes" if classes_only else ("Manage subjects" if subjects_only else "Manage classes and subjects")
+        super().__init__(parent, title,
+                         "Reusable lists appear in student and test forms. Edit / Update renames saved records; Remove only hides a name from future choices.",
+                         "settings", "info", width=520 if (classes_only or subjects_only) else 760)
         self.repo = repo
         self.lists: dict[str, QListWidget] = {}
+        self.cards: dict[str, QFrame] = {}
         row = QHBoxLayout()
         row.setSpacing(14)
-        for kind, title, description in (("classes", "Classes", "Used for student rosters and tests."),
-                                         ("subjects", "Subjects", "A test can include several subjects.")):
+        for kind, card_title, description in (("classes", "Classes", "Used for student rosters and tests."),
+                                              ("subjects", "Subjects", "A test can include several subjects.")):
             frame, content = card((14, 14, 14, 14), 8)
-            content.addWidget(label(title, "cardTitle"))
+            content.addWidget(label(card_title, "cardTitle"))
             content.addWidget(label(description, "hint"))
             listing = QListWidget()
             listing.setObjectName("checkList")
             listing.setMinimumHeight(250)
-            listing.setAccessibleName(f"Global {title.lower()} list")
+            listing.setAccessibleName(f"Global {card_title.lower()} list")
             listing.currentItemChanged.connect(lambda _current, _previous, k=kind: self._sync_buttons(k))
+            listing.itemDoubleClicked.connect(lambda _item, k=kind: self._rename(k))
             self.lists[kind] = listing
+            self.cards[kind] = frame
             content.addWidget(listing, 1)
             actions = QHBoxLayout()
             add = button(f"Add {kind[:-1]}", lambda k=kind: self._add(k), "ghost", "plus")
-            rename = button("Rename", lambda k=kind: self._rename(k), "ghost", "edit")
+            rename = button("Edit / Update", lambda k=kind: self._rename(k), "ghost", "edit",
+                            "Edit or update this name across saved records")
             remove = button("Remove", lambda k=kind: self._remove(k), "ghost", "trash")
             setattr(self, f"{kind}_rename", rename)
             setattr(self, f"{kind}_remove", remove)
             actions.addWidget(add); actions.addWidget(rename); actions.addWidget(remove)
             content.addLayout(actions)
             row.addWidget(frame, 1)
+        if subjects_only:
+            self.cards["classes"].hide()
+        elif classes_only:
+            self.cards["subjects"].hide()
         self.body.addLayout(row)
         self.hint = label("Existing roster and test records are preserved when a name is removed from these choice lists.", "muted")
         self.body.addWidget(self.hint)

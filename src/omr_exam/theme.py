@@ -110,8 +110,8 @@ QPushButton#nav:disabled {{ color: #6C7B75; background: transparent; }}
     padding: 0 5px; font-size: 12px; font-weight: 600; color: {TEXT_2}; }}
 
 /* ---- surfaces ---- */
-QFrame#card {{ background: {CARD}; border: 1px solid #E6E1D3; border-radius: 12px; }}
-QFrame#inset {{ background: {SUBTLE}; border: 1px solid {BORDER}; border-radius: 8px; }}
+QFrame#card {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 12px; }}
+QFrame#inset {{ background: {SUBTLE}; border: 1.5px solid {BORDER_STRONG}; border-radius: 8px; }}
 QFrame#divider {{ background: {BORDER}; max-height: 1px; min-height: 1px; border: none; }}
 #statValue {{ font-size: 26px; font-weight: 700; }}
 #statLabel {{ color: {MUTED}; font-size: 13px; }}
@@ -132,44 +132,44 @@ QFrame#banner QLabel {{ background: transparent; border: none; }}
 #toast QLabel {{ color: white; font-weight: 600; }}
 
 /* ---- buttons ---- */
-QPushButton {{ background: {CARD}; border: 1px solid #D3CDBB; border-radius: 8px; padding: 7px 14px;
+QPushButton {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 8px; padding: 7px 14px;
     font-weight: 600; color: {TEXT}; min-height: 20px; }}
-QPushButton:hover {{ background: {SUBTLE}; border-color: {FAINT}; }}
+QPushButton:hover {{ background: {SUBTLE}; border-color: {ACCENT}; }}
 QPushButton:pressed {{ background: #ECE8DD; }}
 QPushButton:focus {{ border: 2px solid {ACCENT}; padding: 6px 13px; }}
 QPushButton:disabled {{ color: #B3B8B1; background: {SUBTLE}; border-color: {BORDER}; }}
 QPushButton::menu-indicator {{ image: url({assets["chevron-down"]}); subcontrol-position: right center;
     subcontrol-origin: padding; right: 8px; width: 14px; height: 14px; }}
-QPushButton#primary {{ background: {ACCENT}; border: 1px solid {ACCENT}; color: white; }}
+QPushButton#primary {{ background: {ACCENT}; border: 1.5px solid {ACCENT}; color: white; }}
 QPushButton#primary:hover {{ background: {ACCENT_DARK}; border-color: {ACCENT_DARK}; }}
 QPushButton#primary:focus {{ border: 2px solid #073F3B; }}
 QPushButton#primary:disabled {{ background: #8FC4BD; border-color: #8FC4BD; color: white; }}
-QPushButton#danger {{ color: {BAD}; }}
-QPushButton#danger:hover {{ background: {BAD_BG}; border-color: {BAD_BORDER}; }}
-QPushButton#danger:disabled {{ color: #B3B8B1; }}
-QPushButton#ghost {{ background: transparent; border: 1px solid transparent; color: {TEXT_2}; }}
-QPushButton#ghost:hover {{ background: #ECE8DD; }}
+QPushButton#danger {{ color: {BAD}; border-color: {BAD_BORDER}; }}
+QPushButton#danger:hover {{ background: {BAD_BG}; border-color: {BAD}; }}
+QPushButton#danger:disabled {{ color: #B3B8B1; border-color: {BORDER}; }}
+QPushButton#ghost {{ background: {CARD}; border: 1px solid {BORDER_STRONG}; color: {TEXT_2}; }}
+QPushButton#ghost:hover {{ background: {SUBTLE}; border-color: {ACCENT}; color: {TEXT}; }}
 QPushButton#ghost:focus {{ border: 2px solid {ACCENT}; }}
-QPushButton#ghost:disabled {{ color: #B3B8B1; background: transparent; }}
+QPushButton#ghost:disabled {{ color: #B3B8B1; background: {SUBTLE}; border-color: {BORDER}; }}
 QPushButton#link {{ background: transparent; border: none; color: {ACCENT}; padding: 2px 0; text-align: left; }}
 QPushButton#link:hover {{ color: {ACCENT_DARK}; text-decoration: underline; }}
 QPushButton#link:focus {{ border: none; text-decoration: underline; }}
-QPushButton#tool {{ padding: 6px; border-radius: 6px; background: transparent; border: 1px solid transparent; }}
-QPushButton#tool:hover {{ background: #ECE8DD; }}
-QPushButton#tool:checked {{ background: {ACCENT_SOFT}; border-color: {ACCENT_BORDER}; }}
+QPushButton#tool {{ padding: 6px; border-radius: 6px; background: {CARD}; border: 1px solid {BORDER}; }}
+QPushButton#tool:hover {{ background: {SUBTLE}; border-color: {BORDER_STRONG}; }}
+QPushButton#tool:checked {{ background: {ACCENT_SOFT}; border: 1.5px solid {ACCENT}; }}
 QPushButton#tool:focus {{ border: 2px solid {ACCENT}; padding: 5px; }}
-QPushButton#templateCard {{ background: {CARD}; border: 1px solid #DAD4C3; border-radius: 12px; padding: 12px 14px;
+QPushButton#templateCard {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 12px; padding: 12px 14px;
     text-align: left; font-weight: 400; min-height: 50px; }}
 QPushButton#templateCard:hover {{ border-color: {ACCENT}; background: {SUBTLE}; }}
 QPushButton#templateCard:checked {{ border: 2px solid {ACCENT}; background: {ACCENT_SOFT}; padding: 11px 13px; }}
 QPushButton#templateCard:focus {{ border: 2px solid {ACCENT}; padding: 11px 13px; }}
 
 /* segmented control */
-QFrame#segmented {{ background: #E9E5DA; border-radius: 8px; }}
+QFrame#segmented {{ background: #E9E5DA; border: 1px solid {BORDER_STRONG}; border-radius: 8px; padding: 2px; }}
 QPushButton#segment {{ background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 12px;
     color: {MUTED}; font-weight: 600; }}
-QPushButton#segment:hover {{ color: {TEXT}; }}
-QPushButton#segment:checked {{ background: {CARD}; color: {TEXT}; border: 1px solid {BORDER}; }}
+QPushButton#segment:hover {{ color: {TEXT}; background: #F5F2EA; }}
+QPushButton#segment:checked {{ background: {CARD}; color: {TEXT}; border: 1.5px solid {ACCENT}; }}
 QPushButton#segment:focus {{ border: 2px solid {ACCENT}; padding: 4px 11px; }}
 
 /* answer choices in the review inspector */
@@ -189,19 +189,20 @@ QPushButton#answerChip[state="edited"] {{ background: {ACCENT_SOFT}; border-colo
 
 /* ---- inputs ---- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox, QPlainTextEdit, QTextEdit {{
-    background: {CARD}; border: 1px solid {FIELD_BORDER}; border-radius: 8px; padding: 8px 11px; min-height: 20px;
+    background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 8px; padding: 8px 11px; min-height: 20px;
     selection-background-color: {ACCENT}; selection-color: white; }}
-QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover {{ border-color: {FIELD_HOVER}; }}
+QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover {{ border-color: {ACCENT}; }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{
     border: 2px solid {ACCENT}; padding: 7px 10px; background: #FFFFFF; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ background: {SUBTLE}; color: {FAINT}; }}
-QLineEdit[invalid="true"], QComboBox[invalid="true"], QDateEdit[invalid="true"] {{ border-color: {BAD}; background: #FEF6F4; }}
+QLineEdit[invalid="true"], QComboBox[invalid="true"], QDateEdit[invalid="true"], QListWidget[invalid="true"] {{ border: 2px solid {BAD}; background: #FEF6F4; }}
 QLineEdit#search {{ padding-left: 6px; }}
 QLineEdit#cellEditor {{ border: 2px solid {ACCENT}; border-radius: 4px; padding: 0 4px; min-height: 0; font-weight: 700;
     background: #FFFFFF; }}
-QPushButton#chip {{ background: {SUBTLE}; border: 1px solid {BORDER}; border-radius: 11px; padding: 1px 10px; min-height: 18px;
-    font-size: 12px; font-weight: 600; color: {TEXT_2}; }}
-QPushButton#chip:hover {{ background: {ACCENT_SOFT}; border-color: {ACCENT_BORDER}; color: {ACCENT_DARK}; }}
+QPushButton#chip {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 12px; padding: 3px 11px; min-height: 22px;
+    font-size: 12px; font-weight: 600; color: {TEXT}; }}
+QPushButton#chip:hover {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; color: {ACCENT_DARK}; }}
+QPushButton#chip:checked, QPushButton#chip[active="true"] {{ background: {ACCENT_SOFT}; border: 2px solid {ACCENT}; color: {ACCENT_DARK}; padding: 2px 10px; }}
 QSpinBox, QDoubleSpinBox, QDateEdit {{ padding: 7px 26px 7px 11px; }}
 QAbstractSpinBox QLineEdit, QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; min-height: 0; }}
 QComboBox {{ padding-right: 28px; }}
@@ -222,32 +223,35 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url({assets["chevron-
 QDateEdit::drop-down {{ border: none; width: 28px; }}
 QDateEdit::down-arrow {{ image: url({assets["chevron-down"]}); width: 14px; height: 14px; }}
 QCheckBox {{ spacing: 8px; }}
-QCheckBox::indicator, QTableView::indicator, QGroupBox::indicator {{ width: 16px; height: 16px;
-    border: 1.5px solid {FAINT}; border-radius: 4px; background: white; }}
-QCheckBox::indicator:hover, QTableView::indicator:hover {{ border-color: {ACCENT}; }}
-QCheckBox::indicator:checked, QTableView::indicator:checked, QGroupBox::indicator:checked {{
+QCheckBox::indicator, QTableView::indicator, QListWidget::indicator, QGroupBox::indicator {{ width: 16px; height: 16px;
+    border: 1.5px solid {BORDER_STRONG}; border-radius: 4px; background: white; }}
+QCheckBox::indicator:hover, QTableView::indicator:hover, QListWidget::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked, QTableView::indicator:checked, QListWidget::indicator:checked, QGroupBox::indicator:checked {{
     background: {ACCENT}; border-color: {ACCENT}; image: url({assets["check"]}); }}
 QCheckBox:focus {{ color: {ACCENT_DARK}; }}
 
 /* ---- tables & lists ---- */
-QTableWidget, QTableView {{ background: {CARD}; alternate-background-color: #FBF9F4; border: 1px solid {BORDER};
-    border-radius: 8px; gridline-color: #ECE8DD; selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT};
+QTableWidget, QTableView {{ background: {CARD}; alternate-background-color: #FBF9F4; border: 1.5px solid {BORDER_STRONG};
+    border-radius: 8px; gridline-color: #DFD9C9; selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT};
     outline: none; }}
 QTableWidget::item {{ padding: 6px 10px; border: none; }}
-QTableWidget#gridTable {{ gridline-color: {GRID_LINE}; border: 1px solid {BORDER_STRONG}; }}
+QTableWidget#gridTable {{ gridline-color: {GRID_LINE}; border: 1.5px solid {BORDER_STRONG}; }}
 QTableWidget#gridTable::item:selected {{ background: transparent; color: {TEXT}; }}
-QTableWidget#gridTable:focus {{ border: 1px solid {ACCENT}; }}
+QTableWidget#gridTable:focus {{ border: 2px solid {ACCENT}; }}
 QTableWidget::item:selected {{ background: {ACCENT_SOFT}; color: {TEXT}; }}
-QTableWidget:focus {{ border: 1px solid {ACCENT}; }}
+QTableWidget:focus {{ border: 2px solid {ACCENT}; }}
 QHeaderView {{ background: transparent; }}
-QHeaderView::section {{ background: {SUBTLE}; color: {MUTED}; font-size: 12px; font-weight: 700; border: none;
-    border-bottom: 1px solid {BORDER}; padding: 8px 10px; }}
+QHeaderView::section {{ background: {SUBTLE}; color: {TEXT_2}; font-size: 12px; font-weight: 700; border: none;
+    border-bottom: 1.5px solid {BORDER_STRONG}; padding: 8px 10px; }}
 QTableCornerButton::section {{ background: {SUBTLE}; border: none; }}
-QListWidget {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px; outline: none; }}
-QListWidget::item {{ padding: 8px; border-radius: 6px; }}
-QListWidget::item:selected {{ background: {ACCENT_SOFT}; color: {TEXT}; }}
-QListWidget::item:hover {{ background: {SUBTLE}; }}
-QListWidget:focus {{ border: 1px solid {ACCENT}; }}
+QListWidget {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 8px; padding: 5px; outline: none; }}
+QListWidget::item {{ padding: 8px 10px; border-radius: 6px; border: 1px solid transparent; margin: 1px 0; }}
+QListWidget::item:selected {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT}; color: {TEXT}; }}
+QListWidget::item:hover {{ background: {SUBTLE}; border: 1px solid {BORDER_STRONG}; }}
+QListWidget#checkList::item {{ border: 1px solid {BORDER}; border-radius: 7px; padding: 7px 10px; margin: 2px 0; background: {CARD}; }}
+QListWidget#checkList::item:hover {{ background: {SUBTLE}; border-color: {ACCENT}; }}
+QListWidget#checkList::item:selected {{ background: {ACCENT_SOFT}; border: 1.5px solid {ACCENT}; color: {TEXT}; }}
+QListWidget:focus {{ border: 2px solid {ACCENT}; }}
 QListWidget#queue {{ padding: 0; border: none; border-radius: 0; background: {CARD}; }}
 QListWidget#queue::item {{ padding: 0; border-radius: 0; border-bottom: 1px solid #ECE8DD; }}
 
@@ -319,6 +323,8 @@ def repolish(widget: QWidget) -> None:
 
 
 def set_property(widget: QWidget, name: str, value) -> None:
+    if not isinstance(widget, QWidget):
+        return
     if widget.property(name) != value:
         widget.setProperty(name, value)
         repolish(widget)

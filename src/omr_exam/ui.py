@@ -24,8 +24,8 @@ from omr_exam.dialogs import (AnswerKeyDialog, BatchLogDialog, BatchPickerDialog
                               ReferenceDataDialog, StudentDialog)
 from omr_exam.icons import icon, icon_size, pixmap
 from omr_exam.ingest import SUPPORTED_SCAN_SUFFIXES, count_scan_pages, scan_files_in_folder
-from omr_exam.reports import (EXPORTS, class_results, distractor_analysis, export_all, export_function, item_analysis,
-                              summary_stats)
+from omr_exam.reports import (EXPORTS, _subject_for_question, class_results, distractor_analysis, export_all,
+                              export_function, item_analysis, summary_stats)
 from omr_exam.review import ReviewPage
 from omr_exam.scan_job import ScanOutcome, ScanProgress, ScanWorker, process_scan_batch
 from omr_exam.sheets import generate_sheet_pdf
@@ -566,7 +566,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ tests & keys
     def _build_tests_page(self) -> QWidget:
         page, layout = _page("Tests", "Each test has its own answer sheet, answer key, and scan batches.",
-                             (button("JSON example", self.download_test_json_example, "ghost", "download",
+                             (button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
+                                     "View, add, edit, or remove classes and subjects"),
+                              button("JSON example", self.download_test_json_example, "ghost", "download",
                                      "Save a valid test JSON file, then edit and import it"),
                               button("Import exam file", self.import_config, "", "upload", "Import a test saved as JSON"),
                               button("New test", self.new_test, "primary", "plus")))
@@ -750,15 +752,15 @@ class MainWindow(QMainWindow):
     def _known_classes(self) -> list[str]:
         return self.repo.reference_values("classes")
 
-    def manage_reference_data(self, *, subjects_only: bool = False) -> list[str] | None:
-        dialog = ReferenceDataDialog(self.repo, self)
-        if subjects_only:
-            dialog.lists["classes"].parentWidget().hide()
+    def manage_reference_data(self, *, subjects_only: bool = False, classes_only: bool = False) -> list[str] | None:
+        dialog = ReferenceDataDialog(self.repo, self, classes_only=classes_only, subjects_only=subjects_only)
         dialog.exec()
         self.refresh_tests()
         self.refresh_students()
         if subjects_only:
             return self.repo.reference_values("subjects")
+        if classes_only:
+            return self.repo.reference_values("classes")
         return None
 
     def new_test(self):
@@ -767,7 +769,10 @@ class MainWindow(QMainWindow):
         classes = self._known_classes()
         subjects = self.repo.reference_values("subjects")
         dialog = NewTestDialog(self, classes, subjects,
-                               manage_subjects=lambda: self.manage_reference_data(subjects_only=True))
+                               manage_subjects=lambda: self.manage_reference_data(subjects_only=True),
+                               manage_classes=lambda: self.manage_reference_data(classes_only=True),
+                               edit_class=lambda old, new: self.repo.rename_reference_value("classes", old, new),
+                               edit_subject=lambda old, new: self.repo.rename_reference_value("subjects", old, new))
         dialog.institute.setText(self.repo.get_setting("institute_name", "QualifyIAS"))
         if not dialog.exec():
             return
@@ -814,7 +819,7 @@ class MainWindow(QMainWindow):
         if not self.config or self.active_test_id is None:
             alert(self, "No test selected", "Create or select a test first.")
             return False
-        dialog = AnswerKeyDialog(self.config, self)
+        dialog = AnswerKeyDialog(self.config, self, available_subjects=self.repo.reference_values("subjects"))
         if not dialog.exec():
             return False
         try:
@@ -881,7 +886,10 @@ class MainWindow(QMainWindow):
         menu.addAction(icon("file-export", theme.TEXT_2, 16), "Export roster as JSON", self.export_students_json)
         more.setMenu(menu)
         page, layout = _page("Students", "The roster links roll numbers on the sheets to student names. It is optional but recommended.",
-                             (more, button("Import roster", self.import_students, "", "upload", "Import a CSV, Excel, or JSON roster"),
+                             (more,
+                              button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
+                                     "View, add, edit, or remove classes and subjects"),
+                              button("Import roster", self.import_students, "", "upload", "Import a CSV, Excel, or JSON roster"),
                               button("Add student", self.add_student, "primary", "user-plus")))
         bar = QHBoxLayout()
         bar.setSpacing(10)
@@ -1635,10 +1643,12 @@ class MainWindow(QMainWindow):
             f"{record.get('correct', 0)} correct, {record.get('incorrect', 0)} wrong, {record.get('blank', 0)} blank{review_note}")
         question_rows = record.get("questions", [])
         metadata = {str(item["id"]): item for item in self.config["questions"]}
+        q_subject = _subject_for_question(self.config, record.get("set_code"))
         self.question_performance_table.setRowCount(len(question_rows))
         for index, question in enumerate(question_rows):
             meta = metadata.get(str(question["question"]), {})
-            topic = " · ".join(filter(None, (str(meta.get("section", "")), str(meta.get("topic", ""))))) or "—"
+            section_label = q_subject.get(str(question["question"])) or str(meta.get("section", ""))
+            topic = " · ".join(filter(None, (section_label, str(meta.get("topic", ""))))) or "—"
             values = (question["question"], topic, question.get("answer") or "Blank", question.get("expected") or "—",
                       str(question.get("status", "")).capitalize(), f"{question.get('points', 0):g}")
             for column, value in enumerate(values):

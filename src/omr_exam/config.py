@@ -42,6 +42,28 @@ def _reject_non_finite_numbers(value: Any, path: str = "$") -> None:
             _reject_non_finite_numbers(child, f"{path}[{index}]")
 
 
+def _validate_sections(sections: list[dict[str, Any]], question_count: int, normalized_subjects: set[str],
+                       label: str = "Test") -> dict[int, str]:
+    expected_start = 1
+    section_for_question: dict[int, str] = {}
+    for section in sorted(sections, key=lambda item: item["question_start"]):
+        start, end = int(section["question_start"]), int(section["question_end"])
+        if start != expected_start or end < start:
+            raise ValueError(f"{label} section ranges must cover each question exactly once without gaps or overlaps")
+        title = str(section["title"]).strip()
+        if not title:
+            raise ValueError(f"{label} section titles must not be empty")
+        section_subject = str(section.get("subject") or title).strip()
+        if section_subject.casefold() not in normalized_subjects:
+            raise ValueError(f"Section {title} uses subject {section_subject}, which is not selected for this test")
+        for question_id in range(start, end + 1):
+            section_for_question[question_id] = title
+        expected_start = end + 1
+    if expected_start != question_count + 1:
+        raise ValueError(f"{label} section ranges must cover every configured question")
+    return section_for_question
+
+
 def validate_config(config: dict[str, Any]) -> None:
     normalize_config(config)
     _reject_non_finite_numbers(config)
@@ -73,23 +95,7 @@ def validate_config(config: dict[str, Any]) -> None:
     if any(not str(value).strip() for value in subjects) or len(normalized_subjects) != len(subjects):
         raise ValueError("Test subjects must be non-empty and unique")
     if sections:
-        expected_start = 1
-        section_for_question: dict[int, str] = {}
-        for section in sorted(sections, key=lambda item: item["question_start"]):
-            start, end = int(section["question_start"]), int(section["question_end"])
-            if start != expected_start or end < start:
-                raise ValueError("Test section ranges must cover each question exactly once without gaps or overlaps")
-            title = str(section["title"]).strip()
-            if not title:
-                raise ValueError("Test section titles must not be empty")
-            section_subject = str(section.get("subject") or title).strip()
-            if section_subject.casefold() not in normalized_subjects:
-                raise ValueError(f"Section {title} uses subject {section_subject}, which is not selected for this test")
-            for question_id in range(start, end + 1):
-                section_for_question[question_id] = title
-            expected_start = end + 1
-        if expected_start != len(question_ids) + 1:
-            raise ValueError("Test section ranges must cover every configured question")
+        section_for_question = _validate_sections(sections, len(question_ids), normalized_subjects, "Test")
         for question in config["questions"]:
             question_id = int(question["id"])
             if str(question["section"]).strip() != section_for_question[question_id]:
@@ -101,6 +107,13 @@ def validate_config(config: dict[str, Any]) -> None:
                 raise ValueError(f"Answer key {set_code} references unknown question {question}")
             if answer not in config["sheet"]["options"]:
                 raise ValueError(f"Answer key {set_code}, question {question}: unknown option {answer}")
+        if set_config.get("sections"):
+            _validate_sections(set_config["sections"], len(question_ids), normalized_subjects, f"Set {set_code}")
+        for qid, subj in set_config.get("question_subjects", {}).items():
+            if str(qid) not in questions:
+                raise ValueError(f"Set {set_code} subject mapping references unknown question {qid}")
+            if str(subj).strip().casefold() not in normalized_subjects:
+                raise ValueError(f"Set {set_code} question {qid} uses subject {subj}, which is not selected for this test")
     if set(config["sets"]) != set(config["sheet"]["set_codes"]):
         raise ValueError("Configured set codes must match the answer key set names")
     for qid in config["scoring"].get("bonus_questions", []) + config["scoring"].get("dropped_questions", []):

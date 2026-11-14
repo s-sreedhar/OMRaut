@@ -409,9 +409,11 @@ def topic_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> lis
     for row in rows:
         if row["review_required"] or row.get("total") is None:
             continue
+        q_subject = _subject_for_question(config, row.get("set_code"))
         by_id = {str(item["question"]): item for item in row["questions"]}
         for question_id, meta in question_meta.items():
-            group = (str(meta.get("section", "")), str(meta.get("topic", "")))
+            section_label = q_subject.get(question_id) or str(meta.get("section", ""))
+            group = (section_label, str(meta.get("topic", "")))
             record = aggregates.setdefault(group, {"section": group[0], "topic": group[1], "question_ids": set(), "student_scores": defaultdict(float)})
             record["question_ids"].add(question_id)
             record["student_scores"][row.get("roll_number", "")] += float(by_id.get(question_id, {}).get("points", 0))
@@ -437,38 +439,29 @@ def export_topic_analysis_csv(config: dict[str, Any], records: list[dict[str, An
 
 
 def subject_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Summarize earned points by each question section's configured subject."""
+    """Summarize earned points by each question's configured subject (respecting per-set definitions)."""
     eligible = [row for row in class_results(config, records)
                 if not row["review_required"] and row.get("total") is not None]
-    sections = config["test"].get("sections", [])
-    fallback_subject = (config["test"].get("subjects") or ["General"])[0]
-    subject_by_section = {str(section.get("title", "")): str(section.get("subject") or section.get("title") or fallback_subject)
-                          for section in sections}
-    subject_by_question: dict[str, str] = {}
-    for question in config["questions"]:
-        qid = str(question["id"])
-        section_name = str(question.get("section", ""))
-        match = next((item for item in sections
-                      if int(item["question_start"]) <= int(qid) <= int(item["question_end"])), None)
-        if match:
-            subject = str(match.get("subject") or match.get("title") or fallback_subject)
-        else:
-            subject = subject_by_section.get(section_name, fallback_subject)
-        subject_by_question[qid] = subject
-    question_ids_by_subject: dict[str, set[str]] = defaultdict(set)
-    for qid, subject in subject_by_question.items():
-        question_ids_by_subject[subject].add(qid)
+    question_count_by_subject: dict[str, int] = {}
+    set_codes = config.get("sheet", {}).get("set_codes") or [None]
+    for code in set_codes:
+        counts: dict[str, int] = defaultdict(int)
+        for subject in _subject_for_question(config, code).values():
+            counts[subject] += 1
+        for subject, count in counts.items():
+            question_count_by_subject.setdefault(subject, count)
     totals_by_subject: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for index, row in enumerate(eligible):
         student = str(row.get("roll_number") or f"__row_{index}")
+        q_subject = _subject_for_question(config, row.get("set_code"))
         for item in row["questions"]:
-            subject = subject_by_question.get(str(item["question"]))
+            subject = q_subject.get(str(item["question"]))
             if subject is not None:
                 totals_by_subject[subject][student] += float(item["points"])
     output = []
-    for subject in sorted(question_ids_by_subject):
+    for subject in sorted(question_count_by_subject):
         scores = totals_by_subject[subject]
-        output.append({"subject": subject, "question_count": len(question_ids_by_subject[subject]),
+        output.append({"subject": subject, "question_count": question_count_by_subject[subject],
                        "student_count": len(scores),
                        "average_points_per_student": round(sum(scores.values()) / len(scores), 3) if scores else 0})
     return output
@@ -511,9 +504,11 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
         content.append(Paragraph(escape(_source_line(row)), styles["Normal"]))
         table_rows = [[Paragraph(escape(identity), styles["Heading3"]), "", "", "", "", ""],
                       ["Q", "Section / topic", "Student", "Key", "Result", "Points"]]
+        q_subject = _subject_for_question(config, row.get("set_code"))
         for item in row["questions"]:
             meta = question_meta[item["question"]]
-            label = " / ".join(filter(None, [str(meta.get("section", "")), str(meta.get("topic", ""))]))
+            section_label = q_subject.get(str(item["question"])) or str(meta.get("section", ""))
+            label = " / ".join(filter(None, [section_label, str(meta.get("topic", ""))]))
             table_rows.append([item["question"], label, item.get("answer") or "Blank", item.get("expected") or "—", item["status"], item["points"]])
         table = Table(table_rows, repeatRows=2, colWidths=[28, 150, 55, 40, 55, 42])
         table.setStyle(TableStyle([("SPAN", (0, 0), (-1, 0)), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eaf0f6")),
@@ -528,12 +523,18 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
     return path
 
 
-def _subject_for_question(config: dict[str, Any]) -> dict[str, str]:
+def _subject_for_question(config: dict[str, Any], set_code: str | None = None) -> dict[str, str]:
     fallback = (config["test"].get("subjects") or ["General"])[0]
-    sections = config["test"].get("sections", [])
+    set_cfg = config.get("sets", {}).get(set_code, {}) if set_code else {}
+    set_q_subjects = set_cfg.get("question_subjects", {}) if isinstance(set_cfg, dict) else {}
+    set_sections = set_cfg.get("sections", []) if isinstance(set_cfg, dict) else []
+    sections = set_sections or config["test"].get("sections", [])
     result: dict[str, str] = {}
     for question in config["questions"]:
         qid = str(question["id"])
+        if qid in set_q_subjects and str(set_q_subjects[qid]).strip():
+            result[qid] = str(set_q_subjects[qid]).strip()
+            continue
         section_name = str(question.get("section", ""))
         match = next((section for section in sections
                       if int(section["question_start"]) <= int(qid) <= int(section["question_end"])), None)
@@ -543,6 +544,15 @@ def _subject_for_question(config: dict[str, Any]) -> dict[str, str]:
             result[qid] = str(next((section.get("subject") or section.get("title")
                                     for section in sections if section.get("title") == section_name), fallback))
     return result
+
+
+def _all_test_subjects(config: dict[str, Any]) -> list[str]:
+    ordered: list[str] = []
+    for code in config.get("sheet", {}).get("set_codes") or [None]:
+        for subject in _subject_for_question(config, code).values():
+            if subject not in ordered:
+                ordered.append(subject)
+    return ordered or list(config.get("test", {}).get("subjects") or ["General"])
 
 
 def _student_subject_scores(row: dict[str, Any], question_subject: dict[str, str]) -> dict[str, float]:
@@ -587,8 +597,7 @@ def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str
 
     _require_exportable(config, records)
     rows = class_results(config, records)
-    subjects = list(dict.fromkeys(_subject_for_question(config).values()))
-    subject_by_question = _subject_for_question(config)
+    subjects = _all_test_subjects(config)
     path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=22, rightMargin=22, topMargin=24, bottomMargin=24,
                             title=f"{config['test']['title']} subject-wise mark list")
@@ -599,7 +608,7 @@ def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str
     headers = ["Rank", "Roll number", "Candidate name", "Uploaded file", "Imported at (UTC)", *subjects, "Total", "%"]
     data = [headers]
     for row in rows:
-        by_subject = _student_subject_scores(row, subject_by_question)
+        by_subject = _student_subject_scores(row, _subject_for_question(config, row.get("set_code")))
         filename, _page, imported_at = source_file_details(row)
         data.append([row.get("rank"), row.get("roll_number"), row.get("student_name") or "", *
                      [filename, imported_at], *[round(by_subject.get(subject, 0), 2) for subject in subjects], row.get("total"), row.get("percent")])
@@ -623,7 +632,6 @@ def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str
     stats_by_set = {code: {item["question"]: item for item in item_analysis(config, records, code)}
                     for code in config["sets"]}
     question_meta = {int(question["id"]): question for question in config["questions"]}
-    q_subject = _subject_for_question(config)
     path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=22, bottomMargin=22,
                             title=f"{config['test']['title']} candidate response analysis")
@@ -632,8 +640,10 @@ def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str
     for index, row in enumerate(rows):
         if index:
             content.append(PageBreak())
+        q_subject = _subject_for_question(config, row.get("set_code"))
+        row_subjects = ", ".join(dict.fromkeys(q_subject.values())) or ", ".join(config["test"]["subjects"])
         content.extend([Paragraph("QUESTION RESPONSE ANALYSIS", styles["Title"]),
-                        Paragraph(escape(f"{config['test']['title']}  |  {config['test']['date']}  |  {q_subject.get('1', ', '.join(config['test']['subjects']))}"), styles["Normal"]),
+                        Paragraph(escape(f"{config['test']['title']}  |  {config['test']['date']}  |  {row_subjects}"), styles["Normal"]),
                         Spacer(1, 5),
                         Paragraph(escape(f"{row.get('student_name') or 'Student'}  |  Roll {row.get('roll_number')}  |  Class {row.get('class_name') or config['test']['class']}  |  Set {row.get('set_code')}"), styles["Heading3"]),
                         Paragraph(escape(f"Score {row.get('total'):g}/{max_score(config):g} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%  |  Class average {summary_stats(config, records)['mean']}"), styles["ReportMuted"]),
@@ -651,7 +661,7 @@ def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str
             expected = config["sets"][row["set_code"]]["answer_key"].get(str(qid))
             data.append([qid, f"{attempted / denominator:.0%}", f"{correct / denominator:.0%}",
                          f"{max(0, attempted - correct) / denominator:.0%}", q_subject.get(str(qid), ""),
-                         " / ".join(filter(None, [str(meta.get("section", "")), str(meta.get("topic", ""))])),
+                         " / ".join(filter(None, [q_subject.get(str(qid)) or str(meta.get("section", "")), str(meta.get("topic", ""))])),
                          expected or "-", answer.get("answer") or "Blank",
                          {"correct": "Correct", "incorrect": "Wrong", "blank": "Left", "dropped": "Dropped", "bonus": "Bonus"}.get(answer["status"], answer["status"]),
                          answer.get("points", 0)])
@@ -682,10 +692,12 @@ def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]],
     for index, row in enumerate(rows):
         if index:
             content.append(PageBreak())
+        q_subject = _subject_for_question(config, row.get("set_code"))
         groups: dict[tuple[str, str], dict[str, Any]] = {}
         for answer in row["questions"]:
             question = meta[int(answer["question"])]
-            key = (str(question.get("section", "")), str(question.get("topic", "")))
+            section_label = q_subject.get(str(answer["question"])) or str(question.get("section", ""))
+            key = (section_label, str(question.get("topic", "")))
             group = groups.setdefault(key, {"questions": [], "correct": [], "wrong": [], "left": [], "points": 0.0})
             group["questions"].append(str(answer["question"]))
             outcome = "correct" if answer["status"] in {"correct", "bonus"} else "wrong" if answer["status"] == "incorrect" else "left"
@@ -758,19 +770,27 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
     rows = class_results(config, records)
     eligible = _eligible(config, records)
     stats = summary_stats(config, records)
-    subject_map = _subject_for_question(config)
-    subjects = list(dict.fromkeys(subject_map.values()))
-    maxima = defaultdict(float)
-    for question in config["questions"]:
-        qid = str(question["id"])
-        if qid not in {str(item) for item in config["scoring"].get("dropped_questions", [])}:
-            maxima[subject_map[qid]] += float(config["scoring"]["correct"])
+    subjects = _all_test_subjects(config)
+    dropped_ids = {str(item) for item in config["scoring"].get("dropped_questions", [])}
 
-    class_subjects = {row.get("roll_number"): _student_subject_scores(row, subject_map) for row in eligible}
+    def _maxima_for_set(code: str | None) -> dict[str, float]:
+        s_map = _subject_for_question(config, code)
+        result: dict[str, float] = defaultdict(float)
+        for question in config["questions"]:
+            qid = str(question["id"])
+            if qid not in dropped_ids:
+                result[s_map[qid]] += float(config["scoring"]["correct"])
+        return result
+
+    default_maxima = _maxima_for_set(None)
+    maxima_by_set = {code: _maxima_for_set(code) for code in config.get("sets", {})}
+    maxima = maxima_by_set.get(config["sheet"]["set_codes"][0], default_maxima) if config.get("sheet", {}).get("set_codes") else default_maxima
+
+    class_subjects = {row.get("roll_number"): _student_subject_scores(row, _subject_for_question(config, row.get("set_code"))) for row in eligible}
 
     class ComparisonBars(Flowable):
-        def __init__(self, student, width=520):
-            super().__init__(); self.student = student; self.width = width
+        def __init__(self, student, student_maxima=None, width=520):
+            super().__init__(); self.student = student; self.student_maxima = student_maxima or maxima; self.width = width
             self.height = max(58, len(subjects) * 54 + 22)
 
         def draw(self):
@@ -783,7 +803,7 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
                 average = sum(values) / len(values) if values else 0
                 top = max(values, default=0)
                 mine = self.student.get(subject, 0)
-                maximum = max(1.0, maxima.get(subject, 0))
+                maximum = max(1.0, self.student_maxima.get(subject, 0))
                 canvas.setFillColorRGB(.12, .18, .25); canvas.drawString(0, y, subject[:24])
                 for offset, (label_, value, colour) in enumerate((("You", mine, colors_["student"]), ("Avg", average, colors_["average"]), ("Top", top, colors_["topper"]))):
                     bar_y = y - 11 - offset * 11
@@ -801,19 +821,20 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
     for index, row in enumerate(rows):
         if index:
             content.append(PageBreak())
-        by_subject = _student_subject_scores(row, subject_map)
+        student_maxima = maxima_by_set.get(row.get("set_code"), default_maxima)
+        by_subject = _student_subject_scores(row, _subject_for_question(config, row.get("set_code")))
         content.extend([Paragraph("TEST PERFORMANCE ANALYSIS", styles["Title"]),
                         Paragraph(escape(f"{config['test']['title']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
                         Spacer(1, 8), Paragraph(escape(f"{row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Class {row.get('class_name') or config['test']['class']}"), styles["Heading2"]),
                         Paragraph(escape(f"Score {row.get('total')}/{max_score(config)} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%"), styles["Heading3"]),
                         Paragraph(escape(f"Candidates {stats['students']}  |  Average {stats['mean']}  |  High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%"), styles["ReportMuted"]),
                         Spacer(1, 10), Paragraph("Subject analysis: your score compared with the class average and highest score", styles["Heading2"]),
-                        ComparisonBars(by_subject), Spacer(1, 8)])
+                        ComparisonBars(by_subject, student_maxima), Spacer(1, 8)])
         content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
         table_data = [["Subject", "Your score", "Maximum", "Class average", "Top score"]]
         for subject in subjects:
             values = [class_subjects.get(candidate.get("roll_number"), {}).get(subject, 0) for candidate in eligible]
-            table_data.append([subject, round(by_subject.get(subject, 0), 2), round(maxima.get(subject, 0), 2),
+            table_data.append([subject, round(by_subject.get(subject, 0), 2), round(student_maxima.get(subject, 0), 2),
                                round(sum(values) / len(values), 2) if values else 0, round(max(values, default=0), 2)])
         content.append(_styled_table(table_data, [130, 75, 65, 85, 75], font_size=7))
     doc.build(content)

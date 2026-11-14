@@ -254,6 +254,15 @@ class Repository:
                         for question in config.get("questions", []):
                             if str(question.get("section", "")).casefold() == old.casefold():
                                 question["section"] = new
+                        for set_cfg in config.get("sets", {}).values():
+                            for section in set_cfg.get("sections", []):
+                                if str(section.get("subject", "")).casefold() == old.casefold():
+                                    section["subject"] = new
+                                if str(section.get("title", "")).casefold() == old.casefold():
+                                    section["title"] = new
+                            for qid, subj in list(set_cfg.get("question_subjects", {}).items()):
+                                if str(subj).casefold() == old.casefold():
+                                    set_cfg["question_subjects"][qid] = new
                     db.execute("UPDATE tests SET config_json=? WHERE id=?", (json.dumps(config, ensure_ascii=False), row["id"]))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue

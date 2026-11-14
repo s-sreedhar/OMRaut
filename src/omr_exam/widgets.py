@@ -891,30 +891,68 @@ class SuggestField(QWidget):
     textChanged = Signal(str)
 
     def __init__(self, suggestions: Iterable[str] = (), placeholder: str = "", text: str = "", limit: int = 5,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, on_edit=None):
         super().__init__(parent)
         from PySide6.QtWidgets import QLineEdit
 
+        self._limit = limit
+        self._on_edit = on_edit
+        self._chips: list[QPushButton] = []
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(5)
         self.edit = QLineEdit(text)
         self.edit.setPlaceholderText(placeholder)
         self.edit.textChanged.connect(self.textChanged)
+        self.edit.textChanged.connect(self._sync_active_chip)
         outer.addWidget(self.edit)
-        values = sorted({s.strip() for s in suggestions if s and s.strip()}, key=str.casefold)[:limit]
+        self._chips_host = QWidget()
+        self._chips_layout = QHBoxLayout(self._chips_host)
+        self._chips_layout.setContentsMargins(0, 0, 0, 0)
+        self._chips_layout.setSpacing(5)
+        outer.addWidget(self._chips_host)
+        self.set_suggestions(suggestions)
+
+    def _sync_active_chip(self, *_args) -> None:
+        current = self.edit.text().strip().casefold()
+        for chip in self._chips:
+            chip.setChecked(bool(current) and chip.text().strip().casefold() == current)
+
+    def _chip_menu(self, chip: QPushButton, pos) -> None:
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(chip)
+        value = chip.text()
+        menu.addAction(f"Select '{value}'", lambda: (self.edit.setText(value), self.edit.setFocus()))
+        if self._on_edit is not None:
+            menu.addAction(f"Edit / Update '{value}'", lambda: self._on_edit(value))
+        menu.exec(chip.mapToGlobal(pos))
+
+    def set_suggestions(self, suggestions: Iterable[str]) -> None:
+        self._chips.clear()
+        while self._chips_layout.count():
+            item = self._chips_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        values = sorted({s.strip() for s in suggestions if s and s.strip()}, key=str.casefold)[:self._limit]
+        self._chips_host.setVisible(bool(values))
         if values:
-            row = QHBoxLayout()
-            row.setSpacing(5)
             for value in values:
                 chip = QPushButton(value)
                 chip.setObjectName("chip")
+                chip.setCheckable(True)
                 chip.setCursor(Qt.PointingHandCursor)
-                chip.setToolTip(f"Use {value}")
+                chip.setToolTip(f"Click to select '{value}'" + (" · Right-click to edit" if self._on_edit else ""))
                 chip.clicked.connect(lambda _c=False, v=value: (self.edit.setText(v), self.edit.setFocus()))
-                row.addWidget(chip)
-            row.addStretch(1)
-            outer.addLayout(row)
+                if self._on_edit is not None:
+                    chip.setContextMenuPolicy(Qt.CustomContextMenu)
+                    chip.customContextMenuRequested.connect(lambda pos, c=chip: self._chip_menu(c, pos))
+                self._chips.append(chip)
+                self._chips_layout.addWidget(chip)
+            self._chips_layout.addStretch(1)
+            self._sync_active_chip()
 
     def text(self) -> str:
         return self.edit.text()
@@ -1103,3 +1141,218 @@ class BusyDialog(AppDialog):
 
     def closeEvent(self, event):  # noqa: N802
         event.accept() if self._done else event.ignore()
+
+
+class SubjectDelegate(TintDelegate):
+    """In-cell dropdown editor for choosing a subject from the configured list."""
+
+    def __init__(self, subjects: Iterable[str], parent=None):
+        super().__init__(parent)
+        self.subjects = [str(s).strip() for s in subjects if str(s).strip()]
+
+    def set_subjects(self, subjects: Iterable[str]) -> None:
+        self.subjects = [str(s).strip() for s in subjects if str(s).strip()]
+
+    def paint(self, painter, option, index):  # noqa: N802
+        super().paint(painter, option, index)
+        if index.flags() & Qt.ItemIsEditable:
+            painter.save()
+            painter.setPen(QColor(theme.MUTED))
+            r = option.rect
+            cx = r.right() - 10
+            cy = r.center().y()
+            painter.drawLine(cx - 3, cy - 1, cx, cy + 2)
+            painter.drawLine(cx, cy + 2, cx + 3, cy - 1)
+            painter.restore()
+
+    def createEditor(self, parent, _option, _index):  # noqa: N802
+        from PySide6.QtWidgets import QComboBox
+
+        combo = QComboBox(parent)
+        combo.addItems(self.subjects)
+        combo.activated.connect(lambda _idx, c=combo: (self.commitData.emit(c), self.closeEditor.emit(c, QStyledItemDelegate.NoHint)))
+        return combo
+
+    def setEditorData(self, editor, index):  # noqa: N802
+        value = str(index.data(Qt.EditRole) or "").strip()
+        idx = editor.findText(value, Qt.MatchFixedString)
+        if idx >= 0:
+            editor.setCurrentIndex(idx)
+
+    def setModelData(self, editor, model, index):  # noqa: N802
+        model.setData(index, editor.currentText(), Qt.EditRole)
+
+    def updateEditorGeometry(self, editor, option, _index):  # noqa: N802
+        editor.setGeometry(option.rect)
+
+
+class ExcelFillTable(QTableWidget):
+    """QTableWidget with Excel-like fill-handle drag-down, Ctrl+D fill-down, and Ctrl+C/Ctrl+V."""
+
+    def __init__(self, rows: int = 0, columns: int = 0, parent: QWidget | None = None, *, editable_from_col: int = 1):
+        super().__init__(rows, columns, parent)
+        self._editable_from_col = editable_from_col
+        self._dragging_fill = False
+        self._fill_source: tuple[int, int] | None = None
+        self._fill_target_row: int | None = None
+        self.viewport().setMouseTracking(True)
+
+    def _fill_handle_rect(self) -> QRect | None:
+        ranges = self.selectedRanges()
+        if not ranges:
+            row, col = self.currentRow(), self.currentColumn()
+            if row < 0 or col < self._editable_from_col:
+                return None
+            top_row, bottom_row, left_col, right_col = row, row, col, col
+        else:
+            sel = ranges[0]
+            if sel.columnCount() != 1 or sel.leftColumn() < self._editable_from_col:
+                return None
+            top_row, bottom_row, left_col, right_col = sel.topRow(), sel.bottomRow(), sel.leftColumn(), sel.rightColumn()
+        item = self.item(bottom_row, right_col)
+        if item is None or not (item.flags() & Qt.ItemIsEditable):
+            return None
+        rect = self.visualRect(self.model().index(bottom_row, right_col))
+        if not rect.isValid():
+            return None
+        return QRect(rect.right() - 7, rect.bottom() - 7, 8, 8)
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self.viewport())
+        if self._dragging_fill and self._fill_source is not None and self._fill_target_row is not None:
+            src_row, col = self._fill_source
+            lo, hi = min(src_row, self._fill_target_row), max(src_row, self._fill_target_row)
+            top_rect = self.visualRect(self.model().index(lo, col))
+            bot_rect = self.visualRect(self.model().index(hi, col))
+            if top_rect.isValid() and bot_rect.isValid():
+                band = top_rect.united(bot_rect)
+                painter.setPen(QPen(QColor(theme.ACCENT), 2, Qt.DashLine))
+                painter.drawRect(band.adjusted(1, 1, -1, -1))
+        handle = self._fill_handle_rect()
+        if handle is not None:
+            painter.fillRect(handle, QColor(theme.ACCENT))
+            painter.setPen(QPen(QColor("#FFFFFF"), 1))
+            painter.drawRect(handle)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        handle = self._fill_handle_rect()
+        if event.button() == Qt.LeftButton and handle is not None and handle.adjusted(-4, -4, 4, 4).contains(event.pos()):
+            ranges = self.selectedRanges()
+            if ranges and ranges[0].columnCount() == 1:
+                src_row = ranges[0].topRow()
+                col = ranges[0].leftColumn()
+            else:
+                src_row, col = self.currentRow(), self.currentColumn()
+            self._dragging_fill = True
+            self._fill_source = (src_row, col)
+            self._fill_target_row = src_row
+            self.viewport().update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if self._dragging_fill and self._fill_source is not None:
+            idx = self.indexAt(event.pos())
+            if idx.isValid():
+                self._fill_target_row = idx.row()
+                self.viewport().update()
+            event.accept()
+            return
+        handle = self._fill_handle_rect()
+        if handle is not None and handle.adjusted(-4, -4, 4, 4).contains(event.pos()):
+            self.viewport().setCursor(Qt.CrossCursor)
+        else:
+            self.viewport().unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._dragging_fill and self._fill_source is not None and self._fill_target_row is not None:
+            src_row, col = self._fill_source
+            target_row = self._fill_target_row
+            self._dragging_fill = False
+            self._fill_source = None
+            self._fill_target_row = None
+            if target_row != src_row:
+                self.fill_range(col, src_row, target_row)
+            self.viewport().update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def fill_range(self, column: int, source_row: int, target_row: int) -> None:
+        source_item = self.item(source_row, column)
+        if source_item is None or column < self._editable_from_col:
+            return
+        value = source_item.text()
+        lo, hi = min(source_row, target_row), max(source_row, target_row)
+        for row in range(lo, hi + 1):
+            item = self.item(row, column)
+            if item is not None and (item.flags() & Qt.ItemIsEditable):
+                item.setText(value)
+
+    def fill_down_selection(self) -> None:
+        ranges = self.selectedRanges()
+        if not ranges:
+            row, col = self.currentRow(), self.currentColumn()
+            if row > 0 and col >= self._editable_from_col:
+                self.fill_range(col, row - 1, row)
+            return
+        for sel in ranges:
+            if sel.rowCount() == 1 and sel.topRow() > 0:
+                for col in range(max(self._editable_from_col, sel.leftColumn()), sel.rightColumn() + 1):
+                    self.fill_range(col, sel.topRow() - 1, sel.topRow())
+            else:
+                for col in range(max(self._editable_from_col, sel.leftColumn()), sel.rightColumn() + 1):
+                    self.fill_range(col, sel.topRow(), sel.bottomRow())
+
+    def keyPressEvent(self, event):  # noqa: N802
+        from PySide6.QtGui import QGuiApplication
+
+        if event.modifiers() & Qt.ControlModifier:
+            if event.key() == Qt.Key_D:
+                self.fill_down_selection()
+                event.accept()
+                return
+            if event.key() == Qt.Key_C:
+                ranges = self.selectedRanges()
+                if ranges:
+                    sel = ranges[0]
+                    lines = []
+                    for r in range(sel.topRow(), sel.bottomRow() + 1):
+                        lines.append("\t".join(self.item(r, c).text() if self.item(r, c) else ""
+                                             for c in range(sel.leftColumn(), sel.rightColumn() + 1)))
+                    QGuiApplication.clipboard().setText("\n".join(lines))
+                    event.accept()
+                    return
+            if event.key() == Qt.Key_V:
+                text = QGuiApplication.clipboard().text()
+                if text:
+                    rows_data = [line.split("\t") for line in text.splitlines()]
+                    ranges = self.selectedRanges()
+                    if len(rows_data) == 1 and len(rows_data[0]) == 1 and ranges and ranges[0].rowCount() > 1:
+                        val = rows_data[0][0].strip()
+                        sel = ranges[0]
+                        for r in range(sel.topRow(), sel.bottomRow() + 1):
+                            for c in range(max(self._editable_from_col, sel.leftColumn()), sel.rightColumn() + 1):
+                                item = self.item(r, c)
+                                if item is not None and (item.flags() & Qt.ItemIsEditable):
+                                    item.setText(val)
+                    else:
+                        start_r = max(0, self.currentRow())
+                        start_c = max(self._editable_from_col, self.currentColumn())
+                        for dr, cols_data in enumerate(rows_data):
+                            r = start_r + dr
+                            if r >= self.rowCount():
+                                break
+                            for dc, val in enumerate(cols_data):
+                                c = start_c + dc
+                                if c >= self.columnCount():
+                                    break
+                                item = self.item(r, c)
+                                if item is not None and (item.flags() & Qt.ItemIsEditable):
+                                    item.setText(val.strip())
+                    event.accept()
+                    return
+        super().keyPressEvent(event)

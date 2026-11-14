@@ -154,7 +154,7 @@ def test_new_test_and_answer_key_dialogs_support_single_paper_mode():
 
     keys = AnswerKeyDialog(config)
     assert keys.single
-    assert keys.table.columnCount() == 3
+    assert keys.table.columnCount() == 4
     assert keys.set_picker.isHidden()
     dialog.close()
     keys.close()
@@ -484,14 +484,77 @@ def test_answer_key_cells_are_typed_not_picked():
     config = build_from_template(TEMPLATES[0], title="Typed", class_name="A", subject="B")
     keys = AnswerKeyDialog(config)
     keys.show()
-    keys.table.setCurrentCell(0, 2)
-    keys.table.edit(keys.table.model().index(0, 2))
+    keys.table.setCurrentCell(0, 3)
+    keys.table.edit(keys.table.model().index(0, 3))
     editor = keys.table.findChild(QLineEdit, "cellEditor")
     assert editor is not None and not keys.table.findChildren(QComboBox)
     editor.textEdited.emit("c")             # a complete answer is saved at once and the cursor moves down
     app.processEvents()
-    assert keys.table.item(0, 2).text() == "C"
+    assert keys.table.item(0, 3).text() == "C"
     assert keys.table.currentRow() == 1
     assert not keys.findChildren(QComboBox)
+    keys._changed = False
+    keys.close()
+
+
+def test_new_test_validation_with_no_subjects_and_class_subject_management(tmp_path):
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    from omr_exam.dialogs import AnswerKeyDialog, NewTestDialog, ReferenceDataDialog, SetSubjectsDialog
+
+    app = QApplication.instance() or QApplication([])
+    repo = Repository(tmp_path / "db.sqlite3")
+    repo.add_reference_value("classes", "10A")
+    repo.add_reference_value("subjects", "Physics")
+    repo.add_reference_value("subjects", "Chemistry")
+
+    ref = ReferenceDataDialog(repo, classes_only=True)
+    assert ref.cards["subjects"].isHidden()
+    assert not ref.cards["classes"].isHidden()
+    ref.close()
+
+    dialog = NewTestDialog(
+        classes=repo.reference_values("classes"),
+        subjects=repo.reference_values("subjects"),
+        manage_classes=lambda: repo.add_reference_value("classes", "10B"),
+    )
+    dialog.title.setText("Mock Exam")
+    dialog.class_name.setText("10A")
+    # Uncheck all subjects to reproduce the reported validation path.
+    for i in range(dialog.subject_list.count()):
+        dialog.subject_list.item(i).setCheckState(dialog.subject_list.item(i).checkState().Unchecked)
+    dialog.attempt_accept()
+    assert not dialog.form_error.isHidden()
+    assert "at least one subject" in dialog.form_error.text()
+    assert dialog.subject_list.property("invalid") == "true"
+
+    dialog._manage_classes()
+    assert [b.text() for b in dialog.class_name.findChildren(type(dialog.add_set_button), "chip")] == ["10A", "10B"]
+    dialog.close()
+
+    config = build_from_template(TEMPLATES[1], title="Multi Set", class_name="10A", subjects=["Physics"], question_count=4)
+    keys = AnswerKeyDialog(config, available_subjects=["Physics", "Chemistry"])
+    assert keys.available_subjects == ["Physics", "Chemistry"]
+    # Excel-style fill-down on the Subject column (col 2) for Set A:
+    keys.table.item(0, 2).setText("Chemistry")
+    keys.table.fill_range(2, 0, 2)
+    assert keys._set_subjects["A"]["1"] == "Chemistry"
+    assert keys._set_subjects["A"]["3"] == "Chemistry"
+    # SetSubjectsDialog also sees all available subjects and uses fast table editing:
+    sub_dialog = SetSubjectsDialog(keys.available_subjects, ["A", "B"], [1, 2, 3, 4], keys._set_subjects, keys)
+    assert sub_dialog.subject_combo.count() == 2
+    sub_dialog.subject_combo.setCurrentText("Chemistry")
+    sub_dialog.from_q.setValue(1)
+    sub_dialog.to_q.setValue(2)
+    sub_dialog._apply_range(all_sets=False)
+    keys._set_subjects = sub_dialog.set_subjects
+    sub_dialog.close()
+    for col, code in enumerate(["A", "B"], 3):
+        for row in range(4):
+            keys.table.item(row, col).setText("A")
+    updated = keys.updated_config(complete=True)
+    assert "Chemistry" in updated["test"]["subjects"]
+    assert updated["sets"]["A"]["question_subjects"]["1"] == "Chemistry"
+    assert updated["sets"]["B"]["question_subjects"]["1"] == "Physics"
     keys._changed = False
     keys.close()
