@@ -1,17 +1,23 @@
 """Reusable interface components shared by every screen."""
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Iterable
 
 from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QFrame, QGraphicsScene, QGraphicsView, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QTableWidget, QToolTip, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetSelectionRange, QToolTip,
+    QVBoxLayout, QWidget,
 )
 
 from omr_exam import theme
 from omr_exam.icons import icon, icon_size, pixmap
+
+
+def _plain_text(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", str(text or "")).strip()
 
 
 # ------------------------------------------------------------------ primitives
@@ -26,7 +32,9 @@ def label(text: str = "", name: str = "", wrap: bool = True) -> QLabel:
 def button(text: str, handler: Callable[[], Any] | None = None, kind: str = "", icon_name: str = "",
            tip: str = "") -> QPushButton:
     """A push button. ``kind`` is '', 'primary', 'danger', 'ghost', 'link' or 'tool'."""
+    clean_text = text.strip()
     widget = QPushButton(f" {text}" if icon_name and text else text)
+    widget.setAutoDefault(False)
     if kind:
         widget.setObjectName(kind)
     if icon_name:
@@ -35,10 +43,16 @@ def button(text: str, handler: Callable[[], Any] | None = None, kind: str = "", 
         widget.setIconSize(icon_size(16))
     if kind not in {"tool"}:
         widget.setCursor(Qt.PointingHandCursor)
+    if clean_text:
+        widget.setAccessibleName(clean_text)
     if tip:
         widget.setToolTip(tip)
-        if not text:
+        if not clean_text:
             widget.setAccessibleName(tip)
+        else:
+            widget.setAccessibleDescription(tip)
+    elif clean_text:
+        widget.setToolTip(clean_text)
     if handler is not None:
         widget.clicked.connect(lambda _checked=False: handler())
     return widget
@@ -52,7 +66,9 @@ def divider() -> QFrame:
 
 
 def kbd(text: str) -> QLabel:
-    return label(text, "kbd", wrap=False)
+    w = label(text, "kbd", wrap=False)
+    w.setAccessibleName(f"Shortcut {text}")
+    return w
 
 
 def card(margins: tuple[int, int, int, int] = (18, 16, 18, 16), spacing: int = 10) -> tuple[QFrame, QVBoxLayout]:
@@ -87,6 +103,8 @@ def table(headers: list[str], stretch_column: int | None = None, editable: bool 
     widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     widget.setTabKeyNavigation(False)
     widget.setWordWrap(False)
+    widget.setFocusPolicy(Qt.StrongFocus)
+    widget.setAccessibleName(", ".join(h for h in headers if h) or "Table")
     widget.setItemDelegate(TintDelegate(widget))
     if not editable:
         widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -94,6 +112,10 @@ def table(headers: list[str], stretch_column: int | None = None, editable: bool 
     header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     header.setHighlightSections(False)
     header.setMinimumSectionSize(48)
+    for col, text in enumerate(headers):
+        h_item = widget.horizontalHeaderItem(col)
+        if h_item is not None and text:
+            h_item.setToolTip(text)
     if stretch_column is not None:
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setSectionResizeMode(stretch_column, QHeaderView.Stretch)
@@ -109,9 +131,14 @@ class Pill(QLabel):
         self.setObjectName("pill")
         self.setProperty("tone", tone)
         self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        if text:
+            self.setAccessibleName(text)
+            self.setToolTip(text)
 
     def set(self, text: str, tone: str = "neutral") -> None:
         self.setText(text)
+        self.setAccessibleName(text)
+        self.setToolTip(text)
         theme.set_property(self, "tone", tone)
 
 
@@ -140,6 +167,10 @@ class Banner(QFrame):
         row.addWidget(self._action, 0, Qt.AlignVCenter)
         self._tone = ""
         self.set_tone(tone)
+        if text:
+            plain = _plain_text(text) or text
+            self.setAccessibleName(plain)
+            self.setToolTip(plain)
 
     def set_tone(self, tone: str) -> None:
         if tone == self._tone:
@@ -151,7 +182,9 @@ class Banner(QFrame):
 
     def set(self, text: str, tone: str | None = None) -> None:
         self._text.setText(text)
-        self.setAccessibleName(text)
+        plain = _plain_text(text) or text
+        self.setAccessibleName(plain)
+        self.setToolTip(plain)
         if tone is not None:
             self.set_tone(tone)
 
@@ -164,6 +197,9 @@ class Banner(QFrame):
     def set_action(self, text: str = "", handler: Callable[[], Any] | None = None) -> None:
         self._handler = handler
         self._action.setText(text)
+        if text:
+            self._action.setAccessibleName(text)
+            self._action.setToolTip(text)
         self._action.setVisible(bool(text and handler))
 
 
@@ -193,12 +229,15 @@ class StatTile(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(92)
         self.setAccessibleName(caption)
+        self.setToolTip(f"{caption}: 0")
 
     def set_value(self, value: str, sub: str = "", tone: str | None = None) -> None:
         self.value.setText(value)
         self.sub.setText(sub)
         self.sub.setVisible(bool(sub))
-        self.setAccessibleDescription(f"{value} {sub}".strip())
+        desc = f"{value} {sub}".strip()
+        self.setAccessibleDescription(desc)
+        self.setToolTip(f"{self.caption.text()}: {desc}")
         if tone is not None and tone != self._tile.property("tone"):
             self._tile.setPixmap(pixmap(self._icon_name, theme.TONES[tone][0], 19))
             theme.set_property(self._tile, "tone", tone)
@@ -217,6 +256,8 @@ class EmptyState(QWidget):
     def __init__(self, icon_name: str, title: str, body: str, actions: Iterable[QPushButton] = (),
                  parent: QWidget | None = None):
         super().__init__(parent)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(_plain_text(body))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 28, 24, 28)
         outer.setSpacing(8)
@@ -242,6 +283,8 @@ class EmptyState(QWidget):
     def set(self, title: str, body: str) -> None:
         self.title.setText(title)
         self.body.setText(body)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(_plain_text(body))
 
 
 class Segmented(QFrame):
@@ -249,9 +292,16 @@ class Segmented(QFrame):
 
     changed = Signal(str)
 
-    def __init__(self, options: Iterable[tuple[str, str]], parent: QWidget | None = None):
+    def __init__(self, options: Iterable[tuple[str, str]], default_or_parent: QWidget | str | None = None,
+                 on_change: Callable[[str], Any] | None = None, parent: QWidget | None = None):
+        initial_key: str | None = None
+        if isinstance(default_or_parent, QWidget):
+            parent = default_or_parent
+        elif isinstance(default_or_parent, str):
+            initial_key = default_or_parent
         super().__init__(parent)
         self.setObjectName("segmented")
+        self.setAccessibleName("Segmented filter")
         row = QHBoxLayout(self)
         row.setContentsMargins(3, 3, 3, 3)
         row.setSpacing(2)
@@ -263,17 +313,27 @@ class Segmented(QFrame):
             option.setObjectName("segment")
             option.setCheckable(True)
             option.setCursor(Qt.PointingHandCursor)
+            option.setAccessibleName(text)
+            option.setToolTip(text)
             option.clicked.connect(lambda _c=False, k=key: self.changed.emit(k))
             self._group.addButton(option)
             self._buttons[key] = option
             row.addWidget(option)
         self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-        first = next(iter(self._buttons.values()), None)
-        if first is not None:
-            first.setChecked(True)
+        if initial_key and initial_key in self._buttons:
+            self._buttons[initial_key].setChecked(True)
+        else:
+            first = next(iter(self._buttons.values()), None)
+            if first is not None:
+                first.setChecked(True)
+        if on_change is not None:
+            self.changed.connect(on_change)
 
     def current(self) -> str:
         return next((key for key, option in self._buttons.items() if option.isChecked()), "")
+
+    def value(self) -> str:
+        return self.current()
 
     def set_current(self, key: str) -> None:
         if key in self._buttons:
@@ -284,13 +344,31 @@ class Segmented(QFrame):
                 option.setChecked(False)
             self._group.setExclusive(True)
 
+    def set_value(self, key: str) -> None:
+        self.set_current(key)
+
     def keys(self) -> list[str]:
         return list(self._buttons)
 
     def set_text(self, key: str, text: str) -> None:
         self._buttons[key].setText(text)
+        self._buttons[key].setAccessibleName(text)
+        self._buttons[key].setToolTip(text)
         self._buttons[key].updateGeometry()
         self.updateGeometry()
+
+    def keyPressEvent(self, event):  # noqa: N802
+        keys = list(self._buttons)
+        if keys and event.key() in (Qt.Key_Left, Qt.Key_Right):
+            cur = self.current()
+            idx = keys.index(cur) if cur in keys else 0
+            nxt = keys[(idx + (1 if event.key() == Qt.Key_Right else -1)) % len(keys)]
+            self.set_current(nxt)
+            self._buttons[nxt].setFocus()
+            self.changed.emit(nxt)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class Toast(QFrame):
@@ -344,6 +422,8 @@ class DropZone(QFrame):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self.setAccessibleName("File drop zone")
+        self.setToolTip("Drag and drop scan files or folders here")
         self._hover = False
         self._enabled_look = True
         self.layout_ = QVBoxLayout(self)
@@ -396,13 +476,17 @@ class Stepper(QWidget):
         self._hover = -1
         self.setMinimumHeight(84)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.TabFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAccessibleName("Workflow progress")
 
     def set_steps(self, steps: list[dict[str, str]]) -> None:
         self._steps = steps
         self.setAccessibleName("Workflow progress")
-        self.setAccessibleDescription("; ".join(
-            f"{index}. {step['title']}: {step.get('caption', '')} ({step['state']})" for index, step in enumerate(steps, 1)))
+        desc = "; ".join(
+            f"{index}. {step['title']}: {step.get('caption', '')} ({step['state']})" for index, step in enumerate(steps, 1))
+        self.setAccessibleDescription(desc)
+        self.setToolTip(desc or "Workflow progress")
         self.update()
 
     def steps(self) -> list[dict[str, str]]:
@@ -422,6 +506,10 @@ class Stepper(QWidget):
             self._hover = index
             self.setCursor(Qt.PointingHandCursor if index >= 0 else Qt.ArrowCursor)
             self.update()
+        if 0 <= index < len(self._steps):
+            step = self._steps[index]
+            QToolTip.showText(event.globalPosition().toPoint(),
+                              f"{index + 1}. {step['title']}: {step.get('caption', '')}", self)
 
     def leaveEvent(self, event):  # noqa: N802
         self._hover = -1
@@ -431,6 +519,22 @@ class Stepper(QWidget):
         index = self._index_at(event.position().x())
         if index >= 0:
             self.clicked.emit(index)
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if self._steps:
+            if event.key() in (Qt.Key_Left, Qt.Key_Right):
+                cur = self._hover if 0 <= self._hover < len(self._steps) else 0
+                self._hover = (cur + (1 if event.key() == Qt.Key_Right else -1)) % len(self._steps)
+                self.update()
+                event.accept()
+                return
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+                target = self._hover if 0 <= self._hover < len(self._steps) else next(
+                    (i for i, s in enumerate(self._steps) if s.get("state") in ("current", "attention")), 0)
+                self.clicked.emit(target)
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event):  # noqa: N802
         if not self._steps:
@@ -507,6 +611,7 @@ def grid_table(widget: QTableWidget) -> QTableWidget:
     widget.setProperty("cellGrid", True)
     widget.setObjectName("gridTable")
     widget.setShowGrid(True)
+    widget.setFocusPolicy(Qt.StrongFocus)
     widget.setSelectionBehavior(QAbstractItemView.SelectItems)
     widget.setSelectionMode(QAbstractItemView.SingleSelection)
     widget.currentCellChanged.connect(lambda *_a: widget.viewport().update())
@@ -617,6 +722,7 @@ class Histogram(QWidget):
         self.setMinimumHeight(215)
         self.setMouseTracking(True)
         self.setAccessibleName("Score distribution")
+        self.setToolTip("Score distribution across scanned sheets")
 
     def set_scores(self, scores: list[float], maximum: float) -> None:
         self._bins, self._mean, self._hover = [], None, -1
@@ -630,7 +736,9 @@ class Histogram(QWidget):
                 counts[min(count - 1, int((score - low) / width))] += 1
             self._bins = [(low + i * width, low + (i + 1) * width, counts[i]) for i in range(count)]
             self._mean = sum(scores) / len(scores)
-        self.setAccessibleDescription("; ".join(f"{a:g} to {b:g}: {n} students" for a, b, n in self._bins) or "No scores yet")
+        desc = "; ".join(f"{a:g} to {b:g}: {n} students" for a, b, n in self._bins) or "No scores yet"
+        self.setAccessibleDescription(desc)
+        self.setToolTip(f"Score distribution (mean {self._mean:.1f})" if self._mean is not None else desc)
         self.update()
 
     def bins(self) -> list[tuple[float, float, int]]:
@@ -747,12 +855,15 @@ class SheetViewer(QGraphicsView):
         self.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setBackgroundBrush(QBrush(QColor("#E3DED1")))
         self.setMinimumSize(280, 240)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._pixmap_item = None
         self._overlay_items: list = []
         self._highlight_item = None
         self._fit_mode = True
         self._message = "Select a sheet to see its scan here."
         self.setAccessibleName("Scanned sheet image")
+        self.setAccessibleDescription("Zoomable scanned answer sheet preview. Use plus and minus keys to zoom, 0 to fit.")
+        self.setToolTip("Drag to pan · Ctrl+Wheel or +/- to zoom · Double-click or press 0 to fit")
 
     # -- content
     def clear(self, message: str = "Select a sheet to see its scan here.") -> None:
@@ -867,6 +978,10 @@ class SheetViewer(QGraphicsView):
             self.zoom_by(1 / 1.2)
         elif event.key() == Qt.Key_0:
             self.fit()
+        elif event.key() == Qt.Key_Home:
+            self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
+        elif event.key() == Qt.Key_End:
+            self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
         else:
             super().keyPressEvent(event)
 
@@ -903,6 +1018,10 @@ class SuggestField(QWidget):
         outer.setSpacing(5)
         self.edit = QLineEdit(text)
         self.edit.setPlaceholderText(placeholder)
+        self.edit.setClearButtonEnabled(True)
+        if placeholder:
+            self.edit.setAccessibleName(placeholder)
+            self.setAccessibleName(placeholder)
         self.edit.textChanged.connect(self.textChanged)
         self.edit.textChanged.connect(self._sync_active_chip)
         outer.addWidget(self.edit)
@@ -911,7 +1030,23 @@ class SuggestField(QWidget):
         self._chips_layout.setContentsMargins(0, 0, 0, 0)
         self._chips_layout.setSpacing(5)
         outer.addWidget(self._chips_host)
+        self.setFocusProxy(self.edit)
         self.set_suggestions(suggestions)
+
+    def setAccessibleName(self, name: str) -> None:  # noqa: N802
+        super().setAccessibleName(name)
+        if hasattr(self, "edit"):
+            self.edit.setAccessibleName(name)
+
+    def setAccessibleDescription(self, description: str) -> None:  # noqa: N802
+        super().setAccessibleDescription(description)
+        if hasattr(self, "edit"):
+            self.edit.setAccessibleDescription(description)
+
+    def setToolTip(self, tip: str) -> None:  # noqa: N802
+        super().setToolTip(tip)
+        if hasattr(self, "edit"):
+            self.edit.setToolTip(tip)
 
     def _sync_active_chip(self, *_args) -> None:
         current = self.edit.text().strip().casefold()
@@ -944,6 +1079,7 @@ class SuggestField(QWidget):
                 chip.setObjectName("chip")
                 chip.setCheckable(True)
                 chip.setCursor(Qt.PointingHandCursor)
+                chip.setAccessibleName(f"Suggestion {value}")
                 chip.setToolTip(f"Click to select '{value}'" + (" · Right-click to edit" if self._on_edit else ""))
                 chip.clicked.connect(lambda _c=False, v=value: (self.edit.setText(v), self.edit.setFocus()))
                 if self._on_edit is not None:
@@ -990,6 +1126,8 @@ class ChoiceDelegate(TintDelegate):
         pattern = "|".join(QRegularExpression.escape(v) for v in self.values)
         editor.setValidator(QRegularExpressionValidator(QRegularExpression(f"(?:{pattern})?", QRegularExpression.CaseInsensitiveOption), editor))
         editor.setObjectName("cellEditor")
+        editor.setAccessibleName(f"Answer option ({', '.join(self.values)})")
+        editor.setToolTip(f"Type one of: {', '.join(self.values)}")
         editor.textEdited.connect(lambda text, e=editor: self._typed(e, text))
         return editor
 
@@ -1020,6 +1158,8 @@ def combo(min_width: int = 0):
     view.setObjectName("comboList")
     widget.setView(view)
     widget.setMaxVisibleItems(14)
+    widget.setFocusPolicy(Qt.StrongFocus)
+    widget.setCursor(Qt.PointingHandCursor)
     if min_width:
         widget.setMinimumWidth(min_width)
     return widget
@@ -1038,6 +1178,9 @@ class AppDialog(QDialog):
         from PySide6.QtGui import QGuiApplication
 
         self.setWindowTitle(title)
+        self.setAccessibleName(title)
+        if subtitle:
+            self.setAccessibleDescription(_plain_text(subtitle))
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         screen = self.screen() or (parent.screen() if parent is not None else None) or QGuiApplication.primaryScreen()
         if screen is not None:
@@ -1081,8 +1224,9 @@ class AppDialog(QDialog):
         outer.addWidget(foot)
 
     def add_button(self, text: str, kind: str = "", accept: bool | None = None, handler: Callable[[], Any] | None = None,
-                   default: bool = False) -> QPushButton:
-        widget = button(text, handler, kind)
+                   default: bool = False, tip: str = "") -> QPushButton:
+        effective_tip = tip or (f"{text} (Enter)" if default else (f"{text} (Esc)" if accept is False else text))
+        widget = button(text, handler, kind, tip=effective_tip)
         widget.setAutoDefault(default)
         widget.setDefault(default)
         if accept is True:
@@ -1119,8 +1263,17 @@ def ask_text(parent: QWidget | None, title: str, message: str, placeholder: str 
     dialog = AppDialog(parent, title, message, "edit", "info", width=520)
     editor = QPlainTextEdit()
     editor.setPlaceholderText(placeholder)
+    editor.setAccessibleName(title)
+    editor.setToolTip(_plain_text(message) or title)
     editor.setMinimumHeight(220)
     dialog.body.addWidget(editor)
+    count_hint = label("0 lines · Tip: Press Ctrl+Enter to apply", "hint")
+    editor.textChanged.connect(lambda: count_hint.setText(
+        f"{len([ln for ln in editor.toPlainText().splitlines() if ln.strip()])} non-empty line(s) · Tip: Press Ctrl+Enter to apply"
+    ))
+    dialog.body.addWidget(count_hint)
+    QShortcut(QKeySequence("Ctrl+Return"), dialog).activated.connect(dialog.accept)
+    QShortcut(QKeySequence("Ctrl+Enter"), dialog).activated.connect(dialog.accept)
     dialog.add_button("Cancel", "", accept=False)
     dialog.add_button(confirm_text, "primary", accept=True, default=True)
     editor.setFocus()
@@ -1139,6 +1292,7 @@ class BusyDialog(AppDialog):
         bar = QProgressBar()
         bar.setRange(0, 0)
         bar.setTextVisible(False)
+        bar.setAccessibleName(message)
         self.body.addWidget(bar)
         self._done = False
 
@@ -1184,6 +1338,8 @@ class SubjectDelegate(TintDelegate):
         view.setObjectName("comboList")
         editor.setView(view)
         editor.setMaxVisibleItems(10)
+        editor.setAccessibleName("Subject selector")
+        editor.setToolTip("Choose a subject for this question")
         # Fit the table row (the default field padding is taller than a cell) and keep the list under the cell.
         editor.setStyleSheet("QComboBox { padding: 1px 30px 1px 8px; min-height: 0; border-radius: 4px; }"
                              "QComboBox::drop-down { margin: 1px; }")
@@ -1208,7 +1364,7 @@ class SubjectDelegate(TintDelegate):
 
 
 class ExcelFillTable(QTableWidget):
-    """QTableWidget with Excel-like fill-handle drag-down, Ctrl+D fill-down, and Ctrl+C/Ctrl+V."""
+    """QTableWidget with Excel-like fill-handle drag-down, Ctrl+D fill-down, Delete to clear, and Ctrl+C/Ctrl+V."""
 
     def __init__(self, rows: int = 0, columns: int = 0, parent: QWidget | None = None, *, editable_from_col: int = 1):
         super().__init__(rows, columns, parent)
@@ -1217,6 +1373,11 @@ class ExcelFillTable(QTableWidget):
         self._fill_source: tuple[int, int] | None = None
         self._fill_target_row: int | None = None
         self.viewport().setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleDescription(
+            "Editable spreadsheet table. Use arrow keys to navigate, type to edit, "
+            "Ctrl+D to fill down, Ctrl+C and Ctrl+V to copy and paste, Delete to clear."
+        )
 
     def _fill_handle_rect(self) -> QRect | None:
         ranges = self.selectedRanges()
@@ -1309,6 +1470,8 @@ class ExcelFillTable(QTableWidget):
         value = source_item.text()
         lo, hi = min(source_row, target_row), max(source_row, target_row)
         for row in range(lo, hi + 1):
+            if self.isRowHidden(row):
+                continue
             item = self.item(row, column)
             if item is not None and (item.flags() & Qt.ItemIsEditable):
                 item.setText(value)
@@ -1328,12 +1491,46 @@ class ExcelFillTable(QTableWidget):
                 for col in range(max(self._editable_from_col, sel.leftColumn()), sel.rightColumn() + 1):
                     self.fill_range(col, sel.topRow(), sel.bottomRow())
 
+    def setRangeSelected(self, selection_range: QTableWidgetSelectionRange, select: bool) -> None:  # noqa: N802
+        if select:
+            self.clearSelection()
+        super().setRangeSelected(selection_range, select)
+
+    def clear_selected_cells(self) -> None:
+        ranges = self.selectedRanges()
+        if not ranges:
+            row, col = self.currentRow(), self.currentColumn()
+            if row >= 0 and col >= self._editable_from_col:
+                item = self.item(row, col)
+                if item is not None and (item.flags() & Qt.ItemIsEditable):
+                    item.setText("")
+            return
+        for sel in ranges:
+            for r in range(sel.topRow(), sel.bottomRow() + 1):
+                if self.isRowHidden(r):
+                    continue
+                for c in range(max(self._editable_from_col, sel.leftColumn()), sel.rightColumn() + 1):
+                    item = self.item(r, c)
+                    if item is not None and (item.flags() & Qt.ItemIsEditable):
+                        item.setText("")
+
     def keyPressEvent(self, event):  # noqa: N802
         from PySide6.QtGui import QGuiApplication
 
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not (event.modifiers() & Qt.ControlModifier):
+            self.clear_selected_cells()
+            event.accept()
+            return
         if event.modifiers() & Qt.ControlModifier:
             if event.key() == Qt.Key_D:
                 self.fill_down_selection()
+                event.accept()
+                return
+            if event.key() == Qt.Key_A and self.rowCount() > 0 and self.columnCount() > self._editable_from_col:
+                self.setRangeSelected(
+                    QTableWidgetSelectionRange(0, self._editable_from_col, self.rowCount() - 1, self.columnCount() - 1),
+                    True,
+                )
                 event.accept()
                 return
             if event.key() == Qt.Key_C:
@@ -1342,6 +1539,8 @@ class ExcelFillTable(QTableWidget):
                     sel = ranges[0]
                     lines = []
                     for r in range(sel.topRow(), sel.bottomRow() + 1):
+                        if self.isRowHidden(r):
+                            continue
                         lines.append("\t".join(self.item(r, c).text() if self.item(r, c) else ""
                                              for c in range(sel.leftColumn(), sel.rightColumn() + 1)))
                     QGuiApplication.clipboard().setText("\n".join(lines))
@@ -1356,6 +1555,8 @@ class ExcelFillTable(QTableWidget):
                         val = rows_data[0][0].strip()
                         sel = ranges[0]
                         for r in range(sel.topRow(), sel.bottomRow() + 1):
+                            if self.isRowHidden(r):
+                                continue
                             for c in range(max(self._editable_from_col, sel.leftColumn()), sel.rightColumn() + 1):
                                 item = self.item(r, c)
                                 if item is not None and (item.flags() & Qt.ItemIsEditable):

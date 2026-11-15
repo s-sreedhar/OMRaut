@@ -1,9 +1,94 @@
-"""Configuration builder for the supported MCQ sheet model."""
+"""Configuration builder and live validation helpers for the supported MCQ sheet model."""
 from __future__ import annotations
 
 from datetime import date
 from typing import Any
 from omr_exam.config import validate_config
+from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
+
+
+def parse_question_list(text: str, max_question: int | None = None, *, label: str = "Question numbers") -> list[int]:
+    """Parse a comma-separated list of question numbers or ranges (e.g. '1-3, 5, 12') with clear validation errors."""
+    items = [part.strip() for part in str(text or "").split(",") if part.strip()]
+    result: list[int] = []
+    seen: set[int] = set()
+    for part in items:
+        if "-" in part and not part.startswith("-"):
+            bounds = part.split("-", 1)
+            try:
+                start_q = int(bounds[0].strip())
+                end_q = int(bounds[1].strip())
+            except ValueError:
+                raise ValueError(f"{label} must be whole numbers or ranges separated by commas") from None
+            if start_q > end_q:
+                raise ValueError(f"{label} range start must be <= end (got {part})")
+            nums = list(range(start_q, end_q + 1))
+        else:
+            try:
+                nums = [int(part)]
+            except ValueError:
+                raise ValueError(f"{label} must be whole numbers separated by commas") from None
+        for num in nums:
+            if num < 1 or (max_question is not None and num > max_question):
+                bound = f" between 1 and {max_question}" if max_question is not None else " >= 1"
+                raise ValueError(f"{label} must be{bound} (got {num})")
+            if num not in seen:
+                seen.add(num)
+                result.append(num)
+    return result
+
+
+def parse_partial_credit(text: str, max_question: int | None = None) -> dict[str, float]:
+    """Parse a comma-separated list of 'question:points' pairs (e.g. '3:2, 7:1.5')."""
+    partial_credit: dict[str, float] = {}
+    for entry in str(text or "").split(","):
+        if not entry.strip():
+            continue
+        if ":" not in entry:
+            raise ValueError("Partial points must look like 3:2, 7:1.5")
+        q_raw, pts_raw = entry.split(":", 1)
+        try:
+            q_num = int(q_raw.strip())
+            pts = float(pts_raw.strip())
+        except ValueError:
+            raise ValueError("Partial points must look like 3:2, 7:1.5") from None
+        if q_num < 1 or (max_question is not None and q_num > max_question):
+            bound = f" between 1 and {max_question}" if max_question is not None else " >= 1"
+            raise ValueError(f"Partial credit question number must be{bound} (got {q_num})")
+        partial_credit[str(q_num)] = pts
+    return partial_credit
+
+
+def sheet_capacity_summary(question_count: int, options: list[str] | int = 4, columns: int = 2,
+                           width_mm: float = 210, height_mm: float = 297) -> dict[str, Any]:
+    """Return layout capacity metrics and human-readable status for the test builder UI."""
+    if isinstance(options, int):
+        clean_options = [chr(ord("A") + i) for i in range(max(0, options))]
+    else:
+        clean_options = [str(o).strip().upper() for o in options if str(o).strip()]
+    opt_count = max(2, len(clean_options))
+    max_cols = maximum_columns_for_options(width_mm, opt_count)
+    max_rows = maximum_questions_per_column(height_mm)
+    eff_cols = max(1, min(columns, max(1, max_cols)))
+    max_total = eff_cols * max_rows
+    qpc = (max(1, question_count) + eff_cols - 1) // eff_cols
+    fits = max_cols >= 1 and 1 <= columns <= max_cols and qpc <= max_rows and len(clean_options) >= 2
+    if max_cols < 1:
+        message = "Too many answer options to fit on an A4 sheet."
+    elif len(clean_options) < 2 or len(set(clean_options)) != len(clean_options):
+        message = "Enter at least two unique answer options (e.g. A, B, C, D)."
+    elif not fits:
+        message = f"Up to {max_total} questions fit in {eff_cols} column(s) ({max_rows} per column)."
+    else:
+        message = f"{columns} column{'s' if columns != 1 else ''} × up to {qpc} question{'s' if qpc != 1 else ''}/column (capacity {max_total} in {columns} col)."
+    return {
+        "max_columns": max(1, max_cols),
+        "max_questions_per_column": max_rows,
+        "max_questions_total": max_total,
+        "questions_per_column": qpc,
+        "fits": fits,
+        "message": message,
+    }
 
 
 def create_test_config(*, title: str, test_date: str | None, class_name: str,

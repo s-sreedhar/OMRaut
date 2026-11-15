@@ -385,7 +385,7 @@ def test_review_corrections_are_drafted_restored_and_confirmed(tmp_path):
     page = reopened.review_page
     assert reopened.batch_id is not None and page.has_unsaved()
     row = next(i for i, record in enumerate(reopened.result_records) if int(record["id"]) == result_id)
-    assert page.table.item(row, 6 + 2).text() == "C"
+    assert page.table.item(row, FIRST_ANSWER_COLUMN + 2).text() == "C"
     page.select_row(row)
     page.confirm_current()
     saved = next(r for r in reopened.repo.results_for_batch(reopened.batch_id) if int(r["id"]) == result_id)

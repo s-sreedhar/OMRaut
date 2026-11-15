@@ -58,6 +58,11 @@ _PATHS: dict[str, str] = {
     "keyboard": '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.100M10 10h.100M14 10h.100M18 10h.100M7 14h10"/>',
     "shield": '<path d="M12 3l8 3v6c0 4.500-3.200 8-8 9-4.800-1-8-4.500-8-9V6z"/><path d="M9 12l2 2 4-4.500"/>',
     "file-export": '<path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/><path d="M9 14h6M12.500 11.500L15 14l-2.500 2.500"/>',
+    "filter": '<path d="M3 5h18l-7 8v5l-4 2v-7z"/>',
+    "sort": '<path d="M7 4v16M7 4L3.500 7.500M7 4l3.500 3.500M17 20V4M17 20l-3.500-3.500M17 20l3.500-3.500"/>',
+    "copy": '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    "help": '<circle cx="12" cy="12" r="9"/><path d="M9.500 9a2.500 2.500 0 0 1 4.800 1c0 1.600-2.300 2.200-2.300 3.500M12 17h.100"/>',
+    "external-link": '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/>',
 }
 
 
@@ -86,8 +91,12 @@ def icon(name: str, color: str = "#3A433E", size: int = 18, disabled: str = "#B3
     """A crisp icon at 1x-3x display scaling, with a muted variant for disabled buttons."""
     result = QIcon()
     for scale in (1.0, 2.0, 3.0):
-        result.addPixmap(pixmap(name, color, size, scale), QIcon.Normal)
-        result.addPixmap(pixmap(name, disabled, size, scale), QIcon.Disabled)
+        normal_pm = pixmap(name, color, size, scale)
+        disabled_pm = pixmap(name, disabled, size, scale)
+        result.addPixmap(normal_pm, QIcon.Normal)
+        result.addPixmap(normal_pm, QIcon.Active)
+        result.addPixmap(normal_pm, QIcon.Selected)
+        result.addPixmap(disabled_pm, QIcon.Disabled)
     return result
 
 

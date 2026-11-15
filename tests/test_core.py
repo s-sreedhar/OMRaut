@@ -812,8 +812,8 @@ def test_existing_sqlite_database_is_migrated(tmp_path):
         columns = {row[1] for row in db.execute("PRAGMA table_info(results)")}
         version = db.execute("PRAGMA user_version").fetchone()[0]
         batch_columns = {row[1] for row in db.execute("PRAGMA table_info(batches)")}
-    assert {"preview_path", "thresholds_json", "marks_json", "flags_json", "processed_at", "uploaded_at"}.issubset(columns)
-    assert version == 7
+    assert {"preview_path", "thresholds_json", "marks_json", "flags_json", "processed_at", "uploaded_at", "scanned_name"}.issubset(columns)
+    assert version == 8
     assert {"expected_pages", "processed_pages", "error_count", "status"}.issubset(batch_columns)
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 0

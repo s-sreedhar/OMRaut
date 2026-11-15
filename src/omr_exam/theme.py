@@ -83,11 +83,11 @@ QLabel {{ background: transparent; }}
 #brandSub {{ color: {SIDEBAR_MUTED}; font-size: 12px; }}
 #navGroup {{ color: {SIDEBAR_MUTED}; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 14px 12px 4px 12px; }}
 #sidebarFoot {{ color: {SIDEBAR_MUTED}; font-size: 12px; }}
-QPushButton#nav {{ text-align: left; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px;
+QPushButton#nav {{ text-align: left; padding: 9px 12px; border: 1.5px solid transparent; border-radius: 8px;
     background: transparent; color: {SIDEBAR_TEXT}; font-weight: 600; }}
 QPushButton#nav:hover {{ background: {SIDEBAR_HOVER}; color: white; }}
-QPushButton#nav:checked {{ background: {SIDEBAR_ACTIVE}; color: white; }}
-QPushButton#nav:focus {{ border: 1px solid #5FBFB3; }}
+QPushButton#nav:checked {{ background: {SIDEBAR_ACTIVE}; color: white; border-left: 3px solid #5FBFB3; padding-left: 10px; }}
+QPushButton#nav:focus {{ border: 1.5px solid #5FBFB3; }}
 QPushButton#nav:disabled {{ color: #6C7B75; background: transparent; }}
 #navBadge {{ background: #F59E0B; color: #1F1300; border-radius: 9px; font-size: 11px; font-weight: 700;
     padding: 0 6px; min-width: 8px; min-height: 18px; max-height: 18px; }}
@@ -146,14 +146,15 @@ QPushButton#primary:focus {{ border: 2px solid #073F3B; }}
 QPushButton#primary:disabled {{ background: #8FC4BD; border-color: #8FC4BD; color: white; }}
 QPushButton#danger {{ color: {BAD}; border-color: {BAD_BORDER}; }}
 QPushButton#danger:hover {{ background: {BAD_BG}; border-color: {BAD}; }}
+QPushButton#danger:focus {{ border: 2px solid {BAD}; padding: 6px 13px; background: {BAD_BG}; }}
 QPushButton#danger:disabled {{ color: #B3B8B1; border-color: {BORDER}; }}
 QPushButton#ghost {{ background: {CARD}; border: 1px solid {BORDER_STRONG}; color: {TEXT_2}; }}
 QPushButton#ghost:hover {{ background: {SUBTLE}; border-color: {ACCENT}; color: {TEXT}; }}
-QPushButton#ghost:focus {{ border: 2px solid {ACCENT}; }}
+QPushButton#ghost:focus {{ border: 2px solid {ACCENT}; padding: 6px 13px; }}
 QPushButton#ghost:disabled {{ color: #B3B8B1; background: {SUBTLE}; border-color: {BORDER}; }}
-QPushButton#link {{ background: transparent; border: none; color: {ACCENT}; padding: 2px 0; text-align: left; }}
+QPushButton#link {{ background: transparent; border: 1px solid transparent; border-radius: 4px; color: {ACCENT}; padding: 2px 4px; text-align: left; }}
 QPushButton#link:hover {{ color: {ACCENT_DARK}; text-decoration: underline; }}
-QPushButton#link:focus {{ border: none; text-decoration: underline; }}
+QPushButton#link:focus {{ border: 1.5px solid {ACCENT}; color: {ACCENT_DARK}; text-decoration: underline; }}
 QPushButton#tool {{ padding: 6px; border-radius: 6px; background: {CARD}; border: 1px solid {BORDER}; }}
 QPushButton#tool:hover {{ background: {SUBTLE}; border-color: {BORDER_STRONG}; }}
 QPushButton#tool:checked {{ background: {ACCENT_SOFT}; border: 1.5px solid {ACCENT}; }}
@@ -175,14 +176,17 @@ QPushButton#segment:focus {{ border: 2px solid {ACCENT}; padding: 4px 11px; }}
 /* answer choices in the review inspector */
 QPushButton#choice {{ min-width: 30px; padding: 6px 8px; border-radius: 6px; font-weight: 700; }}
 QPushButton#choice:checked {{ background: {ACCENT}; border-color: {ACCENT}; color: white; }}
+QPushButton#choice:focus {{ border: 2px solid {ACCENT_DARK}; padding: 5px 7px; }}
 QPushButton#choiceBlank {{ padding: 6px 10px; border-radius: 6px; color: {MUTED}; }}
 QPushButton#choiceBlank:checked {{ background: {TEXT_2}; border-color: {TEXT_2}; color: white; }}
+QPushButton#choiceBlank:focus {{ border: 2px solid {ACCENT_DARK}; padding: 5px 9px; }}
 QFrame#issue {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QFrame#issue[active="true"] {{ border: 2px solid {ACCENT}; }}
 QFrame#issue[resolved="true"] {{ background: {SUBTLE}; }}
 QPushButton#answerChip {{ padding: 3px 0; min-width: 52px; max-width: 52px; border-radius: 6px; font-weight: 600;
     font-size: 12px; border: 1px solid {BORDER}; background: {CARD}; }}
 QPushButton#answerChip:hover {{ border-color: {ACCENT}; }}
+QPushButton#answerChip:focus {{ border: 2px solid {ACCENT}; padding: 2px 0; }}
 QPushButton#answerChip[state="blank"] {{ background: {WARN_BG}; border-color: {WARN_BORDER}; color: #92400E; }}
 QPushButton#answerChip[state="flagged"] {{ background: {BAD_BG}; border-color: {BAD_BORDER}; color: #991B1B; }}
 QPushButton#answerChip[state="edited"] {{ background: {ACCENT_SOFT}; border-color: {ACCENT_BORDER}; color: {ACCENT_DARK}; }}
@@ -191,8 +195,8 @@ QPushButton#answerChip[state="edited"] {{ background: {ACCENT_SOFT}; border-colo
 QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox, QPlainTextEdit, QTextEdit {{
     background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 8px; padding: 8px 11px; min-height: 20px;
     selection-background-color: {ACCENT}; selection-color: white; }}
-QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover {{ border-color: {ACCENT}; }}
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{
+QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QComboBox:hover, QPlainTextEdit:hover, QTextEdit:hover {{ border-color: {ACCENT}; }}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
     border: 2px solid {ACCENT}; padding: 7px 10px; background: #FFFFFF; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ background: {SUBTLE}; color: {FAINT}; }}
 QLineEdit[invalid="true"], QComboBox[invalid="true"], QDateEdit[invalid="true"], QListWidget[invalid="true"] {{ border: 2px solid {BAD}; background: #FEF6F4; }}
@@ -202,6 +206,7 @@ QLineEdit#cellEditor {{ border: 2px solid {ACCENT}; border-radius: 4px; padding:
 QPushButton#chip {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 12px; padding: 3px 11px; min-height: 22px;
     font-size: 12px; font-weight: 600; color: {TEXT}; }}
 QPushButton#chip:hover {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; color: {ACCENT_DARK}; }}
+QPushButton#chip:focus {{ border: 2px solid {ACCENT}; padding: 2px 10px; }}
 QPushButton#chip:checked, QPushButton#chip[active="true"] {{ background: {ACCENT_SOFT}; border: 2px solid {ACCENT}; color: {ACCENT_DARK}; padding: 2px 10px; }}
 QSpinBox, QDoubleSpinBox, QDateEdit {{ padding: 7px 26px 7px 11px; }}
 QAbstractSpinBox QLineEdit, QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; min-height: 0; }}
@@ -228,6 +233,7 @@ QCheckBox::indicator, QTableView::indicator, QListWidget::indicator, QGroupBox::
 QCheckBox::indicator:hover, QTableView::indicator:hover, QListWidget::indicator:hover {{ border-color: {ACCENT}; }}
 QCheckBox::indicator:checked, QTableView::indicator:checked, QListWidget::indicator:checked, QGroupBox::indicator:checked {{
     background: {ACCENT}; border-color: {ACCENT}; image: url({assets["check"]}); }}
+QCheckBox::indicator:focus, QGroupBox::indicator:focus {{ border: 2px solid {ACCENT}; }}
 QCheckBox:focus {{ color: {ACCENT_DARK}; }}
 
 /* ---- tables & lists ---- */
@@ -240,10 +246,11 @@ QTableWidget#gridTable {{ gridline-color: {GRID_LINE}; border: 1.5px solid {BORD
 QTableWidget#gridTable::item:selected, QTableWidget#gridTable::item:selected:!active {{ background: transparent; color: {TEXT}; }}
 QTableWidget#gridTable:focus {{ border: 2px solid {ACCENT}; }}
 QTableWidget::item:selected, QTableWidget::item:selected:!active {{ background: #CBE8E2; color: {TEXT}; }}
-QTableWidget:focus {{ border: 2px solid {ACCENT}; }}
+QTableWidget:focus, QTableView:focus {{ border: 2px solid {ACCENT}; }}
 QHeaderView {{ background: transparent; }}
 QHeaderView::section {{ background: {SUBTLE}; color: {TEXT_2}; font-size: 12px; font-weight: 700; border: none;
     border-bottom: 1.5px solid {BORDER_STRONG}; padding: 8px 10px; }}
+QHeaderView::section:hover {{ background: #F2EFE6; color: {TEXT}; }}
 QTableCornerButton::section {{ background: {SUBTLE}; border: none; }}
 QListWidget {{ background: {CARD}; border: 1.5px solid {BORDER_STRONG}; border-radius: 8px; padding: 5px; outline: none; }}
 QListWidget::item {{ padding: 8px 10px; border-radius: 6px; border: 1px solid transparent; margin: 1px 0; }}
@@ -264,8 +271,10 @@ QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 6px; }}
 QMenu::section {{ color: {MUTED}; font-size: 11px; font-weight: 700; padding: 6px 12px 2px 12px; }}
 
 QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 8px; background: {CARD}; top: -1px; }}
-QTabBar::tab {{ padding: 8px 16px; background: transparent; color: {MUTED}; font-weight: 600; }}
+QTabBar::tab {{ padding: 8px 16px; background: transparent; color: {MUTED}; font-weight: 600; border-bottom: 2px solid transparent; }}
+QTabBar::tab:hover {{ color: {TEXT}; background: {SUBTLE}; border-top-left-radius: 6px; border-top-right-radius: 6px; }}
 QTabBar::tab:selected {{ color: {ACCENT}; border-bottom: 2px solid {ACCENT}; }}
+QTabBar::tab:focus {{ color: {ACCENT_DARK}; border-bottom: 2px solid {ACCENT_DARK}; outline: none; }}
 
 QSplitter::handle {{ background: transparent; }}
 QSplitter::handle:horizontal {{ width: 10px; }}

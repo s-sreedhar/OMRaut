@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from omr_exam.layout import Bubble, create_layout
+from omr_exam.ocr import recognize_name
 
 
 @dataclass
@@ -22,6 +23,7 @@ class ReadResult:
     aligned_image: np.ndarray | None = None
     preview_path: str = ""
     thresholds: dict[str, float | str] = field(default_factory=dict)
+    student_name: str = ""
 
     @property
     def requires_review(self) -> bool:
@@ -143,19 +145,30 @@ def align_sheet(image: np.ndarray, config: dict[str, Any]) -> np.ndarray:
     return cv2.warpPerspective(gray, transform, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
-def _darkness(aligned: np.ndarray, bubble: Bubble, width_mm: float, height_mm: float, pixel_threshold: float) -> tuple[float, float]:
+def _bubble_metrics(aligned: np.ndarray, bubble: Bubble, width_mm: float, height_mm: float,
+                    pixel_threshold: float, strong_threshold: float) -> tuple[float, float, float]:
     sx, sy = aligned.shape[1] / width_mm, aligned.shape[0] / height_mm
     cx, cy = round(bubble.x * sx), round(bubble.y * sy)
-    # Sample inner bubble area, excluding printed outline (radius 0.85 mm).
-    radius = max(2, round(0.9 * sx))
+    # Sample a circular inner region well inside the printed 1.55 mm outline so fill fraction
+    # accurately reflects partial, half, and full bubble coverage without ring contamination.
+    radius = max(2, round(0.95 * sx))
     x1, x2 = max(0, cx - radius), min(aligned.shape[1], cx + radius + 1)
     y1, y2 = max(0, cy - radius), min(aligned.shape[0], cy + radius + 1)
     crop = aligned[y1:y2, x1:x2]
     if crop.size == 0:
-        return 0.0, 1.0
-    _, binary = cv2.threshold(crop, pixel_threshold, 255, cv2.THRESH_BINARY_INV)
-    ratio = float(cv2.countNonZero(binary)) / crop.size
-    mean_intensity = float(np.mean(crop))
+        return 0.0, 255.0, 0.0
+    yy, xx = np.ogrid[y1 - cy:y2 - cy, x1 - cx:x2 - cx]
+    samples = crop[(xx * xx + yy * yy) <= radius * radius]
+    if samples.size == 0:
+        return 0.0, 255.0, 0.0
+    ratio = float(np.mean(samples < pixel_threshold))
+    strong_ratio = float(np.mean(samples < strong_threshold))
+    mean_intensity = float(np.mean(samples))
+    return ratio, mean_intensity, strong_ratio
+
+
+def _darkness(aligned: np.ndarray, bubble: Bubble, width_mm: float, height_mm: float, pixel_threshold: float) -> tuple[float, float]:
+    ratio, mean_intensity, _strong = _bubble_metrics(aligned, bubble, width_mm, height_mm, pixel_threshold, pixel_threshold)
     return ratio, mean_intensity
 
 
@@ -172,23 +185,30 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
     # Clamp it to avoid extreme cutoffs on nearly blank or bilevel scans.
     otsu_cutoff, _ = cv2.threshold(aligned, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     pixel_threshold = float(np.clip(otsu_cutoff + 80, 135, 230))
+    strong_threshold = float(np.clip(otsu_cutoff + 20, 95, 175))
     observed: dict[str, dict[str, float]] = {}
     for bubble in layout.bubbles:
         group = f"{bubble.group}:{bubble.index}"
-        ratio, mean = _darkness(aligned, bubble, layout.width, layout.height, pixel_threshold)
+        ratio, mean, strong_ratio = _bubble_metrics(
+            aligned, bubble, layout.width, layout.height, pixel_threshold, strong_threshold
+        )
         observed.setdefault(group, {})[bubble.value] = ratio
         observed[group][f"_mean:{bubble.value}"] = mean
+        observed[group][f"_strong:{bubble.value}"] = strong_ratio
     # Confidence cutoffs can be overridden per test. Otherwise the fixed baseline is
-    # conservative and every near-cutoff mark becomes a review flag.
+    # conservative and every partial, half-filled, or light mark becomes a review flag.
     threshold = float(mark_threshold if mark_threshold is not None else config.get("reader", {}).get("mark_threshold", 0.24))
     faint = float(faint_threshold if faint_threshold is not None else config.get("reader", {}).get("faint_threshold", 0.02))
     if not 0 < faint < threshold < 1:
         raise ValueError("Require 0 < faint_threshold < mark_threshold < 1")
+    partial_floor = min(0.85, max(threshold + 0.42, 0.72))
+    light_floor = 0.62
     decoded: dict[str, str | None] = {}
     scores: dict[str, dict[str, float]] = {}
     for group, values in observed.items():
-        ratios = {k: v for k, v in values.items() if not k.startswith("_mean:")}
+        ratios = {k: v for k, v in values.items() if not k.startswith(("_mean:", "_strong:"))}
         means = {k.removeprefix("_mean:"): v for k, v in values.items() if k.startswith("_mean:")}
+        strong_ratios = {k.removeprefix("_strong:"): v for k, v in values.items() if k.startswith("_strong:")}
         scores[group] = ratios
         selected = [key for key, value in ratios.items() if value >= threshold and means.get(key, 255) < pixel_threshold]
         weak = [(key, value) for key, value in ratios.items()
@@ -207,11 +227,19 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
                           "darkness": max(value for _, value in weak)})
         elif len(selected) == 0 and kind == "answer":
             flags.append({"kind": "blank", "question": index})
-        elif len(selected) == 1 and (weak or selected[0] in ratios and ratios[selected[0]] < threshold + 0.08):
-            flags.append({"kind": "review", "group": kind, "question": index,
-                          "value": selected[0], "values": [selected[0], *weak_values],
-                          "selected_values": selected, "weak_values": weak_values,
-                          "darkness": ratios[selected[0]]})
+        elif len(selected) == 1:
+            choice = selected[0]
+            sel_ratio = ratios[choice]
+            sel_strong = strong_ratios.get(choice, sel_ratio)
+            is_partial = sel_ratio < partial_floor
+            is_light = sel_strong < light_floor
+            if weak or is_partial or is_light:
+                reasons = [r for r, hit in (("partial", is_partial), ("light", is_light), ("alternate", bool(weak))) if hit]
+                flags.append({"kind": "review", "group": kind, "question": index,
+                              "value": choice, "values": [choice, *weak_values],
+                              "selected_values": selected, "weak_values": weak_values,
+                              "darkness": sel_ratio, "strong_darkness": sel_strong,
+                              "reason": "+".join(reasons)})
     answers = {key.split(":", 1)[1]: value for key, value in decoded.items() if key.startswith("answer:")}
     roll = "".join(decoded.get(f"roll:{position}") or "?" for position in range(int(config["sheet"]["roll_number_digits"])))
     if "?" in roll:
@@ -224,5 +252,8 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         set_code = decoded.get("set:0")
         if set_code is None:
             flags.append({"kind": "invalid_set", "message": "Test set is blank or ambiguous"})
+    scanned_name = recognize_name(aligned, config, layout)
     return ReadResult(path, answers, roll, set_code, scores, flags, aligned,
-                      thresholds={"pixel_intensity": pixel_threshold, "mark_density": threshold, "faint_density": faint})
+                      thresholds={"pixel_intensity": pixel_threshold, "strong_intensity": strong_threshold,
+                                  "mark_density": threshold, "partial_density": partial_floor, "faint_density": faint},
+                      student_name=scanned_name)

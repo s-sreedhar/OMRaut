@@ -21,6 +21,7 @@ from omr_exam.config import validate_config
 from omr_exam.ingest import scan_pages
 from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
+from omr_exam.test_builder import parse_partial_credit, parse_question_list, sheet_capacity_summary
 from omr_exam.theme import BAD_BG, GOOD_BG
 from omr_exam.widgets import (AppDialog, Banner, ChoiceDelegate, ExcelFillTable, PillDelegate, Segmented, SubjectDelegate,
                               SuggestField, TintDelegate, alert, ask_text, button, card, combo, confirm, divider, grid_table, label, table)
@@ -61,17 +62,32 @@ class NewTestDialog(QDialog):
                  manage_subjects=None, manage_classes=None, edit_class=None, edit_subject=None):
         super().__init__(parent)
         self.setWindowTitle("Create a new test")
+        self.setAccessibleName("Create a new test")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         _fit_dialog(self, 820, 780)
         self.template: TestTemplate = TEMPLATES[2]
 
-        self.title = QLineEdit(); self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
+        self.title = QLineEdit()
+        self.title.setPlaceholderText("e.g. Unit Test 1 - Science")
+        self.title.setClearButtonEnabled(True)
+        self.title.setAccessibleName("Test title")
+        self.title.setToolTip("Enter the title of the test (e.g. Unit Test 1 - Science)")
         self.edit_class_handler = edit_class
         self.edit_subject_handler = edit_subject
         self.class_name = SuggestField(classes or [], "e.g. 10A", on_edit=self._edit_class_pill if edit_class else None)
+        self.class_name.setAccessibleName("Class")
+        self.class_name.setToolTip("Enter or select the class or batch name (e.g. 10A)")
         self.subject_options = sorted({str(value).strip() for value in (subjects or []) if str(value).strip()}, key=str.casefold)
         self.manage_subjects_handler = manage_subjects
         self.manage_classes_handler = manage_classes
+        self.subject_search = QLineEdit()
+        self.subject_search.setObjectName("search")
+        self.subject_search.setClearButtonEnabled(True)
+        self.subject_search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+        self.subject_search.setPlaceholderText("Filter subjects...")
+        self.subject_search.setAccessibleName("Filter subjects")
+        self.subject_search.setToolTip("Filter the subject checklist by name")
+        self.subject_search.textChanged.connect(self._filter_subjects)
         self.subject_list = QListWidget(); self.subject_list.setObjectName("checkList")
         self.subject_list.setMinimumHeight(96); self.subject_list.setMaximumHeight(150)
         self.subject_list.setAccessibleName("Subjects included in this test")
@@ -80,29 +96,71 @@ class NewTestDialog(QDialog):
             self.subject_list.itemDoubleClicked.connect(self._edit_subject_item)
             self.subject_list.setContextMenuPolicy(Qt.CustomContextMenu)
             self.subject_list.customContextMenuRequested.connect(self._subject_context_menu)
+        else:
+            self.subject_list.setToolTip("Check one or more subjects included in this test")
         self._populate_subjects()
         self.date = QDateEdit(QDate.currentDate()); self.date.setCalendarPopup(True); self.date.setDisplayFormat("d MMM yyyy")
+        self.date.setAccessibleName("Test date")
+        self.date.setToolTip("Select the date of the exam")
 
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
+        self.question_count.setAccessibleName("Number of questions")
         self.options = QLineEdit()
+        self.options.setPlaceholderText("e.g. A, B, C, D")
+        self.options.setClearButtonEnabled(True)
+        self.options.setAccessibleName("Answer options")
         self.roll_digits = QSpinBox(); self.roll_digits.setRange(1, 20)
+        self.roll_digits.setAccessibleName("Roll number digits")
+        self.roll_digits.setToolTip("Number of digits in student roll numbers (1 to 20)")
         self.institute = QLineEdit("QualifyIAS"); self.institute.setPlaceholderText("Institute name printed on the sheet")
+        self.institute.setClearButtonEnabled(True)
+        self.institute.setAccessibleName("Institute name")
+        self.institute.setToolTip("Institute name printed in the answer sheet header")
         self.use_sets = QCheckBox("Students get different papers (sets A, B, ...)")
+        self.use_sets.setAccessibleName("Multiple test sets")
         self.use_sets.setToolTip("Leave this off for one paper. The sheet then has no set bubbles to fill in.")
         self.set_codes = QLineEdit()  # serialized config value
         self.set_codes.hide()
         self.set_editors: list[tuple[QLineEdit, QPushButton]] = []
         self.columns = QSpinBox(); self.columns.setRange(1, 4)
+        self.columns.setAccessibleName("Question columns")
+        self.columns.setToolTip("Number of answer columns on the A4 sheet (1 to 4)")
         self.name_field = QCheckBox("Name"); self.name_field.setChecked(True)
+        self.name_field.setAccessibleName("Print student name field")
+        self.name_field.setToolTip("Include a handwritten Name line on the printed sheet")
         self.class_field = QCheckBox("Class"); self.class_field.setChecked(True)
+        self.class_field.setAccessibleName("Print class field")
+        self.class_field.setToolTip("Include a handwritten Class line on the printed sheet")
         self.correct_points = self._points(); self.incorrect_points = self._points(); self.blank_points = self._points()
+        self.correct_points.setAccessibleName("Points for correct answer")
+        self.correct_points.setToolTip("Marks awarded for each correct answer")
+        self.incorrect_points.setAccessibleName("Points for wrong answer")
+        self.blank_points.setAccessibleName("Points for blank answer")
+        self.blank_points.setToolTip("Marks awarded when a question is left blank")
         self.mark_threshold = QDoubleSpinBox(); self.mark_threshold.setRange(0.05, 0.95); self.mark_threshold.setSingleStep(0.01); self.mark_threshold.setDecimals(2); self.mark_threshold.setValue(0.24)
+        self.mark_threshold.setAccessibleName("Filled-mark sensitivity")
+        self.mark_threshold.setToolTip("Darkness threshold above which a bubble is read as filled (default 0.24)")
         self.faint_threshold = QDoubleSpinBox(); self.faint_threshold.setRange(0.005, 0.90); self.faint_threshold.setSingleStep(0.01); self.faint_threshold.setDecimals(3); self.faint_threshold.setValue(0.02)
+        self.faint_threshold.setAccessibleName("Faint-mark sensitivity")
+        self.faint_threshold.setToolTip("Darkness threshold above which a bubble is flagged as a faint/partial mark (default 0.020)")
         self.bonus = QLineEdit(); self.bonus.setPlaceholderText("e.g. 5, 12")
+        self.bonus.setClearButtonEnabled(True)
+        self.bonus.setAccessibleName("Bonus questions")
+        self.bonus.setToolTip("Comma-separated question numbers that award full marks to everyone (e.g. 5, 12)")
         self.dropped = QLineEdit(); self.dropped.setPlaceholderText("e.g. 7")
+        self.dropped.setClearButtonEnabled(True)
+        self.dropped.setAccessibleName("Dropped questions")
+        self.dropped.setToolTip("Comma-separated question numbers excluded from scoring (e.g. 7)")
         self.partial = QLineEdit(); self.partial.setPlaceholderText("e.g. 3:2, 7:1.5")
+        self.partial.setClearButtonEnabled(True)
+        self.partial.setAccessibleName("Partial points")
+        self.partial.setToolTip("Comma-separated question:points pairs (e.g. 3:2, 7:1.5)")
+        self.capacity_hint = _label("", "hint")
         self.options.textChanged.connect(self._update_column_capacity)
         self.columns.valueChanged.connect(self._update_question_capacity)
+        self.question_count.valueChanged.connect(self._update_question_capacity)
+        for field in (self.bonus, self.dropped, self.partial, self.options):
+            field.textChanged.connect(lambda _text, f=field: self._clear_invalid(f))
 
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
@@ -123,6 +181,7 @@ class NewTestDialog(QDialog):
             choice.setObjectName("templateCard"); choice.setCheckable(True)
             choice.setCursor(Qt.PointingHandCursor)
             choice.setAccessibleName(f"{template.name}. {template.description}")
+            choice.setToolTip(f"{template.name}: {template.summary()}")
             inner = QVBoxLayout(choice); inner.setContentsMargins(16, 12, 16, 12); inner.setSpacing(3)
             for text, name in ((template.name, "strong"), (template.description, "hint")):
                 line = _label(text, name); line.setAttribute(Qt.WA_TransparentForMouseEvents); line.setWordWrap(True)
@@ -141,7 +200,8 @@ class NewTestDialog(QDialog):
         class_heading.addWidget(_label("Class", "hint"))
         class_heading.addStretch(1)
         if self.manage_classes_handler is not None:
-            class_heading.addWidget(button("Manage classes", self._manage_classes, "ghost", "settings"))
+            class_heading.addWidget(button("Manage classes", self._manage_classes, "ghost", "settings",
+                                           "Add, rename, or remove classes"))
         form.addLayout(class_heading, 0, 1)
         form.addWidget(_label("Date", "hint"), 0, 2)
         for column, widget in enumerate((self.title, self.class_name, self.date)):
@@ -152,7 +212,15 @@ class NewTestDialog(QDialog):
         subject_heading.addWidget(_label("Subjects in this test", "hint"))
         subject_heading.addWidget(_label("Select one or more", "muted"))
         subject_heading.addStretch(1)
-        subject_heading.addWidget(button("Manage subjects", self._manage_subjects, "ghost", "settings"))
+        self.select_all_subjects_button = button("Select all", lambda: self._set_all_subjects(True), "link",
+                                                 tip="Select all visible subjects")
+        self.clear_subjects_button = button("Clear", lambda: self._set_all_subjects(False), "link",
+                                            tip="Uncheck all subjects")
+        subject_heading.addWidget(self.select_all_subjects_button)
+        subject_heading.addWidget(self.clear_subjects_button)
+        subject_heading.addWidget(self.subject_search)
+        subject_heading.addWidget(button("Manage subjects", self._manage_subjects, "ghost", "settings",
+                                         "Add, rename, or remove subjects"))
         root.addLayout(subject_heading)
         root.addWidget(self.subject_list)
         self.form_error = _label("", "hint")
@@ -168,7 +236,8 @@ class NewTestDialog(QDialog):
             signal.connect(self._update_summary)
         self.use_sets.toggled.connect(self._sets_toggled)
 
-        self.customize_toggle = button("Customize questions, sets, and marking", None, "link", "chevron-right")
+        self.customize_toggle = button("Customize questions, sets, and marking", None, "link", "chevron-right",
+                                       "Show or hide advanced sheet, set, marking, and reader settings")
         self.customize_toggle.setCheckable(True)
         self.customize_toggle.toggled.connect(self._toggle_customize)
         root.addWidget(self.customize_toggle)
@@ -179,11 +248,12 @@ class NewTestDialog(QDialog):
         sheet_form.addRow("Questions", self.question_count)
         sheet_form.addRow("Answer options", self.options)
         sheet_form.addRow("Question columns", self.columns)
+        sheet_form.addRow("Sheet capacity", self.capacity_hint)
         sheet_form.addRow("Institute name", self.institute)
         sheet_form.addRow("Multiple test sets", self.use_sets)
         self.sets_host = QWidget()
         self.sets_layout = QVBoxLayout(self.sets_host); self.sets_layout.setContentsMargins(0, 0, 0, 0); self.sets_layout.setSpacing(6)
-        self.add_set_button = button("Add set", self.add_set, "ghost", "plus")
+        self.add_set_button = button("Add set", self.add_set, "ghost", "plus", "Add another paper set code (up to 8 sets)")
         sets_row = QVBoxLayout(); sets_row.setContentsMargins(0, 0, 0, 0); sets_row.setSpacing(6)
         sets_row.addWidget(self.sets_host); sets_row.addWidget(self.add_set_button, 0, Qt.AlignLeft)
         sheet_form.addRow("Set codes", sets_row)
@@ -212,8 +282,10 @@ class NewTestDialog(QDialog):
 
         foot = _footer(outer)
         foot.addStretch(1)
-        foot.addWidget(button("Cancel", self.reject))
-        self.create_button = button("Create test and enter answer key", self.attempt_accept, "primary", "arrow-right")
+        self.cancel_button = button("Cancel", self.reject, tip="Cancel and close without creating a test (Esc)")
+        foot.addWidget(self.cancel_button)
+        self.create_button = button("Create test and enter answer key", self.attempt_accept, "primary", "arrow-right",
+                                    "Create the test and open the answer key editor (Enter)")
         self.create_button.setLayoutDirection(Qt.RightToLeft)
         self.create_button.setDefault(True)
         foot.addWidget(self.create_button)
@@ -245,6 +317,26 @@ class NewTestDialog(QDialog):
             item.setCheckState(Qt.Checked if value.casefold() in selected_keys else Qt.Unchecked)
             self.subject_list.addItem(item)
         self.subject_list.blockSignals(False)
+        self._filter_subjects()
+
+    def _filter_subjects(self, text: str | None = None):
+        if not hasattr(self, "subject_search"):
+            return
+        raw = self.subject_search.text() if not isinstance(text, str) else text
+        needle = raw.strip().casefold()
+        for index in range(self.subject_list.count()):
+            item = self.subject_list.item(index)
+            item.setHidden(bool(needle) and needle not in item.text().casefold())
+
+    def _set_all_subjects(self, checked: bool):
+        state = Qt.Checked if checked else Qt.Unchecked
+        self.subject_list.blockSignals(True)
+        for index in range(self.subject_list.count()):
+            item = self.subject_list.item(index)
+            if not item.isHidden() or not checked:
+                item.setCheckState(state)
+        self.subject_list.blockSignals(False)
+        self._subjects_changed(None)
 
     def selected_subjects(self) -> list[str]:
         return [self.subject_list.item(index).text() for index in range(self.subject_list.count())
@@ -374,9 +466,11 @@ class NewTestDialog(QDialog):
             row.addWidget(_label(f"Set {index}", "hint", wrap=False))
             editor = QLineEdit(code); editor.setMaxLength(3); editor.setPlaceholderText("Code, e.g. A")
             editor.setAccessibleName(f"Set {index} code")
+            editor.setToolTip(f"Paper code for Set {index} (e.g. A, B, C)")
             editor.textChanged.connect(self._update_summary)
             row.addWidget(editor, 1)
-            remove_button = button("Remove", lambda _checked=False, field=editor: self.remove_set(field), "ghost", "trash")
+            remove_button = button("Remove", lambda _checked=False, field=editor: self.remove_set(field), "ghost", "trash",
+                                   f"Remove Set {index}")
             row.addWidget(remove_button)
             host = QWidget(); host.setLayout(row); self.sets_layout.addWidget(host)
             self.set_editors.append((editor, remove_button))
@@ -413,22 +507,20 @@ class NewTestDialog(QDialog):
         max_rows = maximum_questions_per_column(297)
         self.question_count.setMaximum(max(1, self.columns.value() * max_rows))
         self.question_count.setToolTip(f"Up to {max_rows} questions per column fit on an A4 sheet.")
+        if hasattr(self, "capacity_hint"):
+            cap = sheet_capacity_summary(
+                question_count=self.question_count.value(),
+                options=[x.strip() for x in self.options.text().split(",") if x.strip()],
+                columns=self.columns.value(),
+            )
+            self.capacity_hint.setText(cap["message"])
 
     @staticmethod
     def _numbers(text: str) -> list[int]:
-        try:
-            return [int(x.strip()) for x in text.split(",") if x.strip()]
-        except ValueError:
-            raise ValueError("Question numbers must be whole numbers separated by commas") from None
+        return parse_question_list(text)
 
     def config(self) -> dict[str, Any]:
-        partial_credit = {}
-        for entry in self.partial.text().split(","):
-            if entry.strip():
-                if ":" not in entry:
-                    raise ValueError("Partial points must look like 3:2, 7:1.5")
-                question, points = entry.split(":", 1)
-                partial_credit[str(int(question.strip()))] = float(points.strip())
+        partial_credit = parse_partial_credit(self.partial.text())
         selected_subjects = self.selected_subjects()
         fields = [name for name, checked in (("name", self.name_field.isChecked()), ("class", self.class_field.isChecked())) if checked]
         return build_from_template(
@@ -486,7 +578,7 @@ class SetSubjectsDialog(AppDialog):
                  set_subjects: dict[str, dict[str, str]], parent=None):
         super().__init__(parent, "Define subjects per set",
                          "Assign which subject each question belongs to in each set. Report analysis uses each student's set.",
-                         "settings", "info", width=620)
+                         "settings", "info", width=660)
         self.subjects = list(subjects)
         self.codes = list(codes)
         self.question_ids = list(question_ids)
@@ -495,6 +587,8 @@ class SetSubjectsDialog(AppDialog):
 
         if len(self.codes) > 1:
             self.set_picker = Segmented([(c, f"Set {c}") for c in self.codes])
+            self.set_picker.setAccessibleName("Select set to assign subjects")
+            self.set_picker.setToolTip("Switch between paper sets")
             self.set_picker.changed.connect(lambda _c: self._load_set())
             self.body.addWidget(self.set_picker)
         else:
@@ -504,8 +598,14 @@ class SetSubjectsDialog(AppDialog):
         range_row.setSpacing(8)
         self.subject_combo = combo()
         self.subject_combo.addItems(self.subjects)
+        self.subject_combo.setAccessibleName("Subject to assign")
+        self.subject_combo.setToolTip("Select the subject to apply to the chosen question range")
         self.from_q = QSpinBox(); self.from_q.setRange(1, max(self.question_ids)); self.from_q.setValue(1)
+        self.from_q.setAccessibleName("From question number")
+        self.from_q.setToolTip("Starting question number")
         self.to_q = QSpinBox(); self.to_q.setRange(1, max(self.question_ids)); self.to_q.setValue(max(self.question_ids))
+        self.to_q.setAccessibleName("To question number")
+        self.to_q.setToolTip("Ending question number")
         range_row.addWidget(_label("Subject:", "hint", wrap=False))
         range_row.addWidget(self.subject_combo, 1)
         range_row.addWidget(_label("From Q:", "hint", wrap=False))
@@ -516,14 +616,33 @@ class SetSubjectsDialog(AppDialog):
 
         apply_row = QHBoxLayout()
         apply_row.setSpacing(8)
-        apply_row.addStretch(1)
-        apply_row.addWidget(button("Apply to set", lambda: self._apply_range(all_sets=False), "primary"))
+        self.summary_label = _label("", "hint", wrap=False)
+        apply_row.addWidget(self.summary_label, 1)
+        if len(self.subjects) > 1:
+            self.split_evenly_button = button("Split evenly", self._split_evenly, "ghost",
+                                              tip="Divide questions evenly across all subjects in this set")
+            apply_row.addWidget(self.split_evenly_button)
+        apply_row.addWidget(button("Apply to set", lambda: self._apply_range(all_sets=False), "primary",
+                                   tip="Assign the selected subject to the question range in the current set"))
         if len(self.codes) > 1:
-            apply_row.addWidget(button("Apply to all sets", lambda: self._apply_range(all_sets=True), "ghost"))
+            apply_row.addWidget(button("Apply to all sets", lambda: self._apply_range(all_sets=True), "ghost",
+                                       tip="Assign the selected subject to the question range across all sets"))
         self.body.addLayout(apply_row)
+
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("search")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+        self.search_input.setPlaceholderText("Filter by question number or subject...")
+        self.search_input.setAccessibleName("Filter questions by number or subject")
+        self.search_input.setToolTip("Filter rows by question number or assigned subject")
+        self.search_input.textChanged.connect(self._filter_rows)
+        self.body.addWidget(self.search_input)
 
         self.table = ExcelFillTable(len(self.question_ids), 2, self, editable_from_col=1)
         self.table.setHorizontalHeaderLabels(["Question", "Subject"])
+        self.table.setAccessibleName("Questions and assigned subjects")
+        self.table.setToolTip("Click a Subject cell to choose from dropdown, or drag the corner / press Ctrl+D to fill down")
         grid_table(self.table)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(32)
@@ -540,6 +659,20 @@ class SetSubjectsDialog(AppDialog):
 
     def _active_code(self) -> str:
         return self.set_picker.current() if self.set_picker is not None else self.codes[0]
+
+    def _split_evenly(self):
+        if not self.subjects:
+            return
+        code = self._active_code()
+        base, extra = divmod(len(self.question_ids), len(self.subjects))
+        idx = 0
+        for s_idx, subj in enumerate(self.subjects):
+            count = base + (1 if s_idx < extra else 0)
+            for _ in range(count):
+                if idx < len(self.question_ids):
+                    self.set_subjects[code][str(self.question_ids[idx])] = subj
+                    idx += 1
+        self._load_set()
 
     def _apply_range(self, *, all_sets: bool):
         start = min(self.from_q.value(), self.to_q.value())
@@ -563,11 +696,34 @@ class SetSubjectsDialog(AppDialog):
             current = mapping.get(str(qid), self.subjects[0] if self.subjects else "")
             self.table.setItem(row, 1, QTableWidgetItem(current))
         self._loading = False
+        self._filter_rows()
+        self._update_summary()
+
+    def _filter_rows(self, *_args):
+        needle = self.search_input.text().strip().casefold() if hasattr(self, "search_input") else ""
+        for row in range(self.table.rowCount()):
+            q_txt = (self.table.item(row, 0).text() if self.table.item(row, 0) else "").casefold()
+            s_txt = (self.table.item(row, 1).text() if self.table.item(row, 1) else "").casefold()
+            match = not needle or needle in q_txt or needle in s_txt
+            self.table.setRowHidden(row, not match)
+
+    def _update_summary(self):
+        if not hasattr(self, "summary_label"):
+            return
+        code = self._active_code()
+        mapping = self.set_subjects.get(code, {})
+        counts: dict[str, int] = {}
+        for qid in self.question_ids:
+            subj = mapping.get(str(qid), self.subjects[0] if self.subjects else "")
+            if subj:
+                counts[subj] = counts.get(subj, 0) + 1
+        self.summary_label.setText(" · ".join(f"{subj}: {n}" for subj, n in counts.items()))
 
     def _on_item_changed(self, item: QTableWidgetItem):
         if not self._loading and item.column() == 1 and item.text().strip():
             qid = str(self.question_ids[item.row()])
             self.set_subjects[self._active_code()][qid] = item.text().strip()
+            self._update_summary()
 
 
 class AnswerKeyDialog(QDialog):
@@ -592,8 +748,26 @@ class AnswerKeyDialog(QDialog):
         self._loading = False
         self._changed = False
         self.setWindowTitle(f"Answer key - {config['test']['title']}")
+        self.setAccessibleName(f"Answer key - {config['test']['title']}")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         _fit_dialog(self, 1100, 740)
+
+        self.table_search = QLineEdit()
+        self.table_search.setObjectName("search")
+        self.table_search.setClearButtonEnabled(True)
+        self.table_search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+        self.table_search.setPlaceholderText("Filter by question #, topic, subject, or answer (Ctrl+F)...")
+        self.table_search.setAccessibleName("Filter answer key questions")
+        self.table_search.setToolTip("Filter questions by number, topic, subject, or answer (Ctrl+F)")
+        self.table_search.textChanged.connect(self._apply_table_filter)
+
+        self.table_filter = Segmented([("all", "All"), ("missing", "Missing"), ("filled", "Filled")])
+        self.table_filter.setAccessibleName("Filter questions by completion status")
+        self.table_filter.setToolTip("Show all questions, only questions missing an answer, or only filled questions")
+        self.table_filter.changed.connect(lambda _k: self._apply_table_filter())
+
+        self.jump_missing_button = button("Next missing", self.jump_to_next_missing, "ghost", "arrow-right",
+                                          "Jump to the next question missing a valid answer (Ctrl+G)")
 
         self.table = ExcelFillTable(len(self.questions), 3 + len(self.codes), self, editable_from_col=1)
         self.single = len(self.codes) == 1
@@ -603,6 +777,7 @@ class AnswerKeyDialog(QDialog):
         self.table.verticalHeader().setDefaultSectionSize(34)
         self.table.setFocusPolicy(Qt.StrongFocus)
         self.table.setAccessibleName("Answer key by question and set")
+        self.table.setToolTip("Type answer options directly into cells, or drag the cell handle / press Ctrl+D to fill down")
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -639,6 +814,7 @@ class AnswerKeyDialog(QDialog):
         sv.addWidget(_label("Type the whole key", "cardTitle"))
         self.set_picker = Segmented([(c, f"Set {c}") for c in self.codes])
         self.set_picker.setAccessibleName("Set to fill")
+        self.set_picker.setToolTip("Choose which paper set to fill or clear")
         self.set_picker.changed.connect(lambda _c: self._refresh_subject_column())
         self.set_picker_caption = _label("Fill which set?", "hint")
         sv.addWidget(self.set_picker_caption)
@@ -648,13 +824,19 @@ class AnswerKeyDialog(QDialog):
             self.set_picker_caption.hide()
         example = "".join(self.options[i % len(self.options)] for i in range(8))
         self.quick = QLineEdit(); self.quick.setPlaceholderText(f"e.g. {example}…  or  1-A 2-B 3-C")
+        self.quick.setClearButtonEnabled(True)
         self.quick.setAccessibleName("Answers in question order")
+        self.quick.setToolTip("Type answers in question order (e.g. ABCD...) or as pairs (1-A 2-B) and press Enter")
         self.quick.returnPressed.connect(self.apply_quick)
         sv.addWidget(self.quick)
+        self.quick_count = _label("", "hint")
+        self.quick_count.hide()
+        sv.addWidget(self.quick_count)
         self.quick_error = _label("", "hint"); self.quick_error.hide()
         sv.addWidget(self.quick_error)
-        self.quick.textChanged.connect(lambda _t: self.quick_error.hide())
-        sv.addWidget(button("Fill the key" if self.single else "Fill this set", self.apply_quick, "primary", "check"))
+        self.quick.textChanged.connect(self._on_quick_text_changed)
+        sv.addWidget(button("Fill the key" if self.single else "Fill this set", self.apply_quick, "primary", "check",
+                            "Parse and fill the typed answers into the selected set"))
         sv.addWidget(_label("Tip: Drag any cell's corner handle or press Ctrl+D to fill down Topic/Subject like Excel.", "hint"))
         sv.addWidget(divider())
         sv.addWidget(_label("USE AN EXISTING KEY", "eyebrow"))
@@ -673,6 +855,7 @@ class AnswerKeyDialog(QDialog):
             row = QHBoxLayout(); row.setSpacing(8)
             name = _label("Key" if self.single else f"Set {code}", "strong"); name.setFixedWidth(46)
             bar = QProgressBar(); bar.setTextVisible(False)
+            bar.setAccessibleName(f"Set {code} completion progress")
             count = _label("", "hint"); count.setFixedWidth(64); count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             row.addWidget(name); row.addWidget(bar, 1); row.addWidget(count)
             sv.addLayout(row)
@@ -680,8 +863,10 @@ class AnswerKeyDialog(QDialog):
         self.status = _label("", "hint")   # plain-text summary kept for screen readers and callers
         self.status.hide()
         sv.addWidget(button("Define subjects per set" if not self.single else "Define question subjects",
-                            self.edit_set_subjects, "ghost", "settings"))
-        sv.addWidget(button("Clear the key" if self.single else "Clear this set", self.clear_set, "ghost", "trash"))
+                            self.edit_set_subjects, "ghost", "settings",
+                            "Assign subjects to question ranges for each set"))
+        sv.addWidget(button("Clear the key" if self.single else "Clear this set", self.clear_set, "ghost", "trash",
+                            "Remove all entered answers for the selected set"))
 
         side_scroll = QScrollArea()
         side_scroll.setWidgetResizable(True)
@@ -691,8 +876,16 @@ class AnswerKeyDialog(QDialog):
         side_scroll.setWidget(side)
 
         self.table.setMinimumHeight(180)
+        table_col = QVBoxLayout(); table_col.setSpacing(8)
+        filter_bar = QHBoxLayout(); filter_bar.setSpacing(8)
+        filter_bar.addWidget(self.table_search, 1)
+        filter_bar.addWidget(self.table_filter)
+        filter_bar.addWidget(self.jump_missing_button)
+        table_col.addLayout(filter_bar)
+        table_col.addWidget(self.table, 1)
+
         body = QHBoxLayout(); body.setSpacing(14)
-        body.addWidget(self.table, 1); body.addWidget(side_scroll)
+        body.addLayout(table_col, 1); body.addWidget(side_scroll)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
         top = QVBoxLayout(); top.setContentsMargins(24, 20, 24, 16); top.setSpacing(6)
         top.addWidget(_label("Answer key", "pageTitle"))
@@ -704,10 +897,15 @@ class AnswerKeyDialog(QDialog):
         foot = _footer(root)
         self.foot_note = _label("", "hint")
         foot.addWidget(self.foot_note, 1)
-        foot.addWidget(button("Cancel", self.reject))
-        self.save_button = button("Save answer key", self.attempt_accept, "primary", "check")
+        self.cancel_button = button("Cancel", self.reject, tip="Discard unsaved changes and close (Esc)")
+        foot.addWidget(self.cancel_button)
+        self.save_button = button("Save answer key", self.attempt_accept, "primary", "check",
+                                  "Save the answer key and close (Ctrl+S)")
         self.save_button.setAutoDefault(False)
         foot.addWidget(self.save_button)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(lambda: (self.table_search.setFocus(), self.table_search.selectAll()))
+        QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self.jump_to_next_missing)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.attempt_accept)
         self._refresh_status()
         first_answer = next((row for row, question in enumerate(self.questions) if str(question["id"]) not in self.dropped), None)
         if first_answer is not None:
@@ -717,6 +915,65 @@ class AnswerKeyDialog(QDialog):
     # --- helpers -------------------------------------------------------
     def _valid_options(self) -> set[str]:
         return {o.upper() for o in self.options}
+
+    def _on_quick_text_changed(self, text: str):
+        self.quick_error.hide()
+        clean = text.strip()
+        if not clean:
+            self.quick_count.hide()
+            return
+        needed = sum(1 for q in self.questions if str(q["id"]) not in self.dropped)
+        valid = self._valid_options()
+        tokens = [ch.upper() for ch in clean if ch.upper() in valid] if "-" not in clean and " " not in clean else [
+            part.split("-")[-1].strip().upper() for part in clean.replace(",", " ").split() if part.strip()
+        ]
+        self.quick_count.setText(f"{len(tokens)} / {needed} answers typed")
+        self.quick_count.show()
+
+    def _apply_table_filter(self, *_args):
+        needle = self.table_search.text().strip().casefold() if hasattr(self, "table_search") else ""
+        mode = self.table_filter.current() if hasattr(self, "table_filter") else "all"
+        valid = self._valid_options()
+        for row, question in enumerate(self.questions):
+            is_dropped = str(question["id"]) in self.dropped
+            row_filled = is_dropped or all(
+                (self.table.item(row, col) and self.table.item(row, col).text() in valid)
+                for col in range(3, 3 + len(self.codes))
+            )
+            if mode == "missing" and row_filled:
+                self.table.setRowHidden(row, True)
+                continue
+            if mode == "filled" and not row_filled:
+                self.table.setRowHidden(row, True)
+                continue
+            if needle:
+                haystack = " ".join(
+                    (self.table.item(row, col).text() if self.table.item(row, col) else "")
+                    for col in range(self.table.columnCount())
+                ).casefold()
+                if f"q{question['id']}" not in haystack:
+                    haystack = f"q{question['id']} {haystack}"
+                self.table.setRowHidden(row, needle not in haystack)
+            else:
+                self.table.setRowHidden(row, False)
+
+    def jump_to_next_missing(self):
+        valid = self._valid_options()
+        start_row = max(0, self.table.currentRow())
+        total = self.table.rowCount()
+        for offset in range(total):
+            row = (start_row + offset) % total
+            if str(self.questions[row]["id"]) in self.dropped:
+                continue
+            for col in range(3, 3 + len(self.codes)):
+                item = self.table.item(row, col)
+                if item is None or item.text() not in valid:
+                    if self.table.isRowHidden(row):
+                        self.table_filter.set_current("all")
+                        self.table_search.clear()
+                    self.table.setCurrentCell(row, col)
+                    self.table.setFocus()
+                    return
 
     def _refresh_subject_column(self):
         code = self.codes[self._set_index()]
@@ -748,7 +1005,7 @@ class AnswerKeyDialog(QDialog):
         row, column = item.row(), item.column()
         if item.text() in self._valid_options():
             next_row = next((candidate for candidate in range(row + 1, self.table.rowCount())
-                             if str(self.questions[candidate]["id"]) not in self.dropped), None)
+                             if str(self.questions[candidate]["id"]) not in self.dropped and not self.table.isRowHidden(candidate)), None)
             if next_row is not None:
                 QTimer.singleShot(0, lambda r=next_row, c=column: self.table.setCurrentCell(r, c))
 
@@ -788,13 +1045,19 @@ class AnswerKeyDialog(QDialog):
             lines.append(f"Set {code}: {filled}/{len(needed)} {'(done)' if done else ''}")
             bar, count = self.set_bars[code]
             bar.setRange(0, max(1, len(needed))); bar.setValue(filled)
+            bar.setToolTip(f"Set {code}: {filled} of {len(needed)} questions answered")
             theme.set_property(bar, "tone", "good" if done else "")
             count.setText(f"{filled}/{len(needed)}")
         self.status.setText("<br>".join(lines))
         self._complete = complete
+        if hasattr(self, "jump_missing_button"):
+            self.jump_missing_button.setEnabled(not complete)
         self.foot_note.setText("All sets are complete." if complete else
                                "Some answers are still missing. You can save now and finish later.")
         self.save_button.setText("Save answer key" if complete else "Save as draft")
+        self.save_button.setAccessibleName(self.save_button.text().strip())
+        if hasattr(self, "table_filter") and self.table_filter.current() != "all":
+            self._apply_table_filter()
 
     # --- actions -------------------------------------------------------
     def apply_quick(self):
@@ -1004,6 +1267,7 @@ class ReferenceDataDialog(AppDialog):
             header.addWidget(label(card_title, "cardTitle"))
             header.addStretch(1)
             count_lbl = label("", "hint", wrap=False)
+            count_lbl.setAccessibleName(f"{card_title} count")
             self._count_labels[kind] = count_lbl
             header.addWidget(count_lbl)
             content.addLayout(header)
@@ -1015,6 +1279,7 @@ class ReferenceDataDialog(AppDialog):
             search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
             search.setPlaceholderText(f"Filter {kind}...")
             search.setAccessibleName(f"Filter {kind}")
+            search.setToolTip(f"Filter saved {kind} by name")
             search.textChanged.connect(lambda _text, k=kind: self._populate_list(k))
             self.searches[kind] = search
             content.addWidget(search)
@@ -1022,12 +1287,15 @@ class ReferenceDataDialog(AppDialog):
             add_row = QHBoxLayout()
             add_row.setSpacing(6)
             quick_input = QLineEdit()
+            quick_input.setClearButtonEnabled(True)
             quick_input.setPlaceholderText(f"New {kind[:-1]} name...")
             quick_input.setAccessibleName(f"New {kind[:-1]} name")
+            quick_input.setToolTip(f"Type a new {kind[:-1]} name and press Enter or click Add")
             quick_input.returnPressed.connect(lambda k=kind: self._add_from_inline(k))
             self.quick_inputs[kind] = quick_input
-            add_btn = button(f"Add", lambda k=kind: self._add_from_inline(k), "", "plus",
+            add_btn = button("Add", lambda k=kind: self._add_from_inline(k), "", "plus",
                              f"Add a new {kind[:-1]} name")
+            add_btn.setAccessibleName(f"Add {kind[:-1]}")
             add_row.addWidget(quick_input, 1)
             add_row.addWidget(add_btn)
             content.addLayout(add_row)
@@ -1036,18 +1304,25 @@ class ReferenceDataDialog(AppDialog):
             listing.setObjectName("checkList")
             listing.setMinimumHeight(230)
             listing.setAccessibleName(f"Global {card_title.lower()} list")
+            listing.setToolTip(f"Saved {kind}. Double-click or press F2 to rename; press Delete to remove.")
             listing.currentItemChanged.connect(lambda _current, _previous, k=kind: self._sync_buttons(k))
             listing.itemDoubleClicked.connect(lambda _item, k=kind: self._rename(k))
             shortcut = QShortcut(QKeySequence("F2"), listing)
             shortcut.setContext(Qt.WidgetShortcut)
             shortcut.activated.connect(lambda k=kind: self._rename(k))
+            del_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), listing)
+            del_shortcut.setContext(Qt.WidgetShortcut)
+            del_shortcut.activated.connect(lambda k=kind: self._remove(k))
             self.lists[kind] = listing
             self.cards[kind] = frame
             content.addWidget(listing, 1)
             actions = QHBoxLayout()
             rename = button("Edit / Update", lambda k=kind: self._rename(k), "ghost", "edit",
                             "Edit or update the selected name across saved records (double-click or F2)")
-            remove = button("Remove", lambda k=kind: self._remove(k), "ghost", "trash")
+            rename.setAccessibleName(f"Edit or update selected {kind[:-1]}")
+            remove = button("Remove", lambda k=kind: self._remove(k), "ghost", "trash",
+                            f"Hide the selected {kind[:-1]} from future choices (Delete)")
+            remove.setAccessibleName(f"Remove selected {kind[:-1]}")
             setattr(self, f"{kind}_rename", rename)
             setattr(self, f"{kind}_remove", remove)
             actions.addWidget(rename); actions.addWidget(remove)
@@ -1059,7 +1334,7 @@ class ReferenceDataDialog(AppDialog):
         elif classes_only:
             self.cards["subjects"].hide()
         self.body.addLayout(row)
-        self.hint = label("Double-click any entry (or click Edit / Update) to rename it across tests and students.", "muted")
+        self.hint = label("Double-click any entry (or press F2) to rename it across tests and students.", "muted")
         self.body.addWidget(self.hint)
         self.add_button("Done", "primary", accept=True, default=False)
         self.refresh()
@@ -1083,11 +1358,13 @@ class ReferenceDataDialog(AppDialog):
                 if listing.item(row).text().casefold() == previous.casefold():
                     listing.setCurrentRow(row)
                     break
+        if listing.currentRow() < 0 and listing.count() > 0:
+            listing.setCurrentRow(0)
         listing.blockSignals(False)
         if len(values):
             self._count_labels[kind].setText(f"{len(shown)} of {len(values)}" if needle else f"{len(values)}")
         else:
-            self._count_labels[kind].setText("")
+            self._count_labels[kind].setText("0")
         self._sync_buttons(kind)
 
     def _selected(self, kind: str) -> str:
@@ -1154,17 +1431,41 @@ class StudentDialog(AppDialog):
         super().__init__(parent, "Edit student" if editing else "Add student",
                          "The roll number must match what students bubble on the sheet.", "user-plus", "info", width=460)
         self.original_roll_number = roll_number.strip() if editing else None
-        self.roll = QLineEdit(roll_number); self.roll.setPlaceholderText("e.g. 000123")
-        self.name = QLineEdit(name); self.name.setPlaceholderText("Full name")
+        self.roll = QLineEdit(roll_number)
+        self.roll.setPlaceholderText("e.g. 000123")
+        self.roll.setClearButtonEnabled(True)
+        self.roll.setAccessibleName("Roll number")
+        self.roll.setToolTip("Student roll number as bubbled on the OMR sheet (required)")
+
+        self.name = QLineEdit(name)
+        self.name.setPlaceholderText("Full name")
+        self.name.setClearButtonEnabled(True)
+        self.name.setAccessibleName("Student name")
+        self.name.setToolTip("Student full name (required)")
+
         self.class_name = SuggestField(classes or [], "Class (optional)", class_name)
+        self.class_name.setAccessibleName("Student class")
+        self.class_name.setToolTip("Optional class or section name")
+
         form = QFormLayout(); form.setVerticalSpacing(10); form.setHorizontalSpacing(16)
         form.addRow("Roll number", self.roll); form.addRow("Name", self.name); form.addRow("Class", self.class_name)
         self.body.addLayout(form)
         self.error = _label("", "hint"); self.error.hide()
+        self.error.setAccessibleName("Validation message")
         self.body.addWidget(self.error)
         self.add_button("Cancel", "", accept=False)
-        self.add_button("Save student", "primary", handler=self._attempt, default=True)
+        self.save_button = self.add_button("Save student", "primary", handler=self._attempt, default=True)
+        self.roll.textChanged.connect(lambda _t: self._clear_field_error(self.roll))
+        self.name.textChanged.connect(lambda _t: self._clear_field_error(self.name))
+        QWidget.setTabOrder(self.roll, self.name)
+        QWidget.setTabOrder(self.name, self.class_name.edit)
         (self.name if roll_number else self.roll).setFocus()
+
+    def _clear_field_error(self, field: QLineEdit):
+        if field.text().strip():
+            theme.set_property(field, "invalid", "false")
+            if self.roll.text().strip() and self.name.text().strip():
+                self.error.hide()
 
     def _attempt(self):
         missing = [field for field in (self.roll, self.name) if not field.text().strip()]
@@ -1190,7 +1491,26 @@ class BatchPickerDialog(AppDialog):
         super().__init__(parent, "Open a scan batch", "Batches are listed newest first.", "layers", "info", width=760)
         self.batches = batches
         self.selected: dict[str, Any] | None = None
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setObjectName("search")
+        self.search.setClearButtonEnabled(True)
+        self.search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+        self.search.setPlaceholderText("Filter batches by ID, test name, or status...")
+        self.search.setAccessibleName("Filter scan batches")
+        self.search.setToolTip("Filter batches by ID, test title, date, or status (Ctrl+F)")
+        self.search.textChanged.connect(self._filter_rows)
+        filter_row.addWidget(self.search, 1)
+        self.count_label = _label(f"{len(batches)} batch{'es' if len(batches) != 1 else ''}", "hint", wrap=False)
+        self.count_label.setAccessibleName("Batch count summary")
+        filter_row.addWidget(self.count_label)
+        self.body.addLayout(filter_row)
+
         self.table = table(["Batch", "Test", "Scanned", "Sheets", "Status"], 1)
+        self.table.setAccessibleName("Saved scan batches table")
+        self.table.setToolTip("Double-click a batch or press Enter to open it")
         self.table.setItemDelegateForColumn(4, PillDelegate(_batch_tone, self.table))
         self.table.setMinimumHeight(340)
         self.table.setRowCount(len(batches))
@@ -1198,7 +1518,9 @@ class BatchPickerDialog(AppDialog):
             values = (f"#{batch['id']}", batch["title"], _when(batch["created_at"]), batch["sheet_count"],
                       _batch_state(batch, pending.get(int(batch["id"]), 0)))
             for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value))
+                item.setToolTip(str(value))
+                self.table.setItem(row, column, item)
             if current_id is not None and int(batch["id"]) == current_id:
                 self.table.selectRow(row)
         if batches and self.table.currentRow() < 0:
@@ -1206,12 +1528,38 @@ class BatchPickerDialog(AppDialog):
         self.table.cellDoubleClicked.connect(lambda _r, _c: self._open())
         self.body.addWidget(self.table)
         self.add_button("Cancel", "", accept=False)
-        self.add_button("Open batch", "primary", handler=self._open, default=True)
+        self.open_button = self.add_button("Open batch", "primary", handler=self._open, default=True)
+        self.open_button.setEnabled(bool(batches))
+        find_shortcut = QShortcut(QKeySequence.Find, self)
+        find_shortcut.activated.connect(lambda: (self.search.setFocus(), self.search.selectAll()))
         self.table.setFocus()
+
+    def _filter_rows(self, text: str = ""):
+        needle = text.strip().casefold()
+        visible = 0
+        first_visible = -1
+        for row in range(self.table.rowCount()):
+            row_text = " ".join(
+                (self.table.item(row, col).text() if self.table.item(row, col) else "")
+                for col in range(self.table.columnCount())
+            ).casefold()
+            match = not needle or needle in row_text
+            self.table.setRowHidden(row, not match)
+            if match:
+                visible += 1
+                if first_visible < 0:
+                    first_visible = row
+        total = len(self.batches)
+        self.count_label.setText(
+            f"{visible} of {total} batches" if needle else f"{total} batch{'es' if total != 1 else ''}"
+        )
+        if self.table.currentRow() >= 0 and self.table.isRowHidden(self.table.currentRow()) and first_visible >= 0:
+            self.table.selectRow(first_visible)
+        self.open_button.setEnabled(visible > 0)
 
     def _open(self):
         row = self.table.currentRow()
-        if 0 <= row < len(self.batches):
+        if 0 <= row < len(self.batches) and not self.table.isRowHidden(row):
             self.selected = self.batches[row]
             self.accept()
 
@@ -1225,13 +1573,45 @@ class BatchLogDialog(AppDialog):
         summary = (f"{status['status'].capitalize()} · {status['processed_pages']} of {status['expected_pages']} pages read · "
                    f"{status['error_count']} error{'s' if status['error_count'] != 1 else ''}")
         super().__init__(parent, f"Batch #{batch_id} log", summary, "list", "info", width=860)
+        self._events = events
         self._lines = [f"Batch #{batch_id}: {summary}"]
+
+        if events:
+            filter_row = QHBoxLayout()
+            filter_row.setSpacing(8)
+            self.search = QLineEdit()
+            self.search.setObjectName("search")
+            self.search.setClearButtonEnabled(True)
+            self.search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+            self.search.setPlaceholderText("Filter log entries by file, level, or message...")
+            self.search.setAccessibleName("Filter batch log entries")
+            self.search.setToolTip("Search batch log entries by file name, level, or message (Ctrl+F)")
+            self.search.textChanged.connect(lambda _t: self._filter_log())
+            filter_row.addWidget(self.search, 1)
+
+            self.level_filter = Segmented([("all", "All"), ("error", "Errors"), ("warning", "Warnings")])
+            self.level_filter.setAccessibleName("Filter log entries by severity")
+            self.level_filter.changed.connect(lambda _val: self._filter_log())
+            filter_row.addWidget(self.level_filter)
+
+            self.count_label = _label(f"{len(events)} entries", "hint", wrap=False)
+            self.count_label.setAccessibleName("Visible log entry count")
+            filter_row.addWidget(self.count_label)
+            self.body.addLayout(filter_row)
+
+            find_shortcut = QShortcut(QKeySequence.Find, self)
+            find_shortcut.activated.connect(lambda: (self.search.setFocus(), self.search.selectAll()))
+
         log = table(["Time", "Level", "File", "Message"], 3)
+        log.setAccessibleName(f"Batch #{batch_id} event log")
+        log.setToolTip("Batch processing events and messages")
         log.setItemDelegateForColumn(1, PillDelegate(lambda text: {"Error": "bad", "Warning": "warn"}.get(text, "neutral"), log))
-        log.setSelectionMode(QAbstractItemView.NoSelection)
+        log.setSelectionBehavior(QAbstractItemView.SelectRows)
+        log.setSelectionMode(QAbstractItemView.SingleSelection)
         log.setWordWrap(True)
         log.setMinimumHeight(380)
         log.setRowCount(len(events))
+        self.log_table = log
         for row, event in enumerate(events):
             name = str(event["source_file"]).split("-", 1)[-1] if event["source_file"] else ""
             for column, value in enumerate((_when(event["logged_at"]), str(event["level"]).capitalize(), name, event["message"])):
@@ -1245,7 +1625,35 @@ class BatchLogDialog(AppDialog):
         else:
             self.body.addWidget(Banner("No events were recorded for this batch.", "info"))
         self.copy_button = self.add_button("Copy log", "", handler=self._copy)
+        self.copy_button.setToolTip("Copy all log entries to the clipboard")
         self.add_button("Close", "primary", accept=True, default=True)
+
+    def _filter_log(self):
+        if not hasattr(self, "search"):
+            return
+        needle = self.search.text().strip().casefold()
+        level_mode = self.level_filter.current()
+        visible = 0
+        for row in range(self.log_table.rowCount()):
+            level_text = (self.log_table.item(row, 1).text() if self.log_table.item(row, 1) else "").casefold()
+            row_text = " ".join(
+                (self.log_table.item(row, col).text() if self.log_table.item(row, col) else "")
+                for col in range(self.log_table.columnCount())
+            ).casefold()
+            level_ok = (
+                level_mode == "all"
+                or (level_mode == "error" and "error" in level_text)
+                or (level_mode == "warning" and "warn" in level_text)
+            )
+            text_ok = not needle or needle in row_text
+            match = level_ok and text_ok
+            self.log_table.setRowHidden(row, not match)
+            if match:
+                visible += 1
+        total = len(self._events)
+        self.count_label.setText(
+            f"{visible} of {total} entries" if (needle or level_mode != "all") else f"{total} entries"
+        )
 
     def _copy(self):
         QGuiApplication.clipboard().setText("\n".join(self._lines))
@@ -1262,40 +1670,94 @@ class ExportDialog(AppDialog):
                          "download", "info", width=620)
         self.action: tuple[str, Any] | None = None
         self.checks: dict[str, QCheckBox] = {}
+        self._row_frames: dict[str, QFrame] = {}
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setObjectName("search")
+        self.search.setClearButtonEnabled(True)
+        self.search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+        self.search.setPlaceholderText("Filter export formats...")
+        self.search.setAccessibleName("Filter export formats")
+        self.search.setToolTip("Filter available report and export formats by name or description")
+        self.search.textChanged.connect(self._filter_exports)
+        filter_row.addWidget(self.search, 1)
+        self.summary_label = _label("", "hint", wrap=False)
+        self.summary_label.setAccessibleName("Selected exports summary")
+        filter_row.addWidget(self.summary_label)
+        self.body.addLayout(filter_row)
+
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); scroll.setMinimumHeight(260); scroll.setMaximumHeight(560)
+        scroll.setAccessibleName("Export formats list")
         rows_host = QWidget()
         rows = QVBoxLayout(rows_host); rows.setContentsMargins(0, 0, 6, 0); rows.setSpacing(8)
         scroll.setWidget(rows_host)
         self.body.addWidget(scroll, 1)
         for kind, (title, hint, _name) in EXPORTS.items():
             row = QFrame(); row.setObjectName("issue")
+            row.setCursor(Qt.PointingHandCursor)
+            row.setToolTip(f"{title}: {hint}")
             line = QHBoxLayout(row); line.setContentsMargins(12, 9, 12, 9); line.setSpacing(10)
             check = QCheckBox(); check.setChecked(kind in defaults); check.setAccessibleName(f"Include {title}")
+            check.setToolTip(f"Include {title} when exporting multiple files to a folder")
             check.toggled.connect(self._refresh)
             self.checks[kind] = check
+            self._row_frames[kind] = row
             line.addWidget(check)
             text = QVBoxLayout(); text.setSpacing(1)
-            text.addWidget(_label(title, "strong", wrap=False)); text.addWidget(_label(hint, "hint"))
+            title_lbl = _label(title, "strong", wrap=False)
+            hint_lbl = _label(hint, "hint")
+            text.addWidget(title_lbl); text.addWidget(hint_lbl)
             line.addLayout(text, 1)
-            line.addWidget(button("Save as…", lambda k=kind: self._one(k), "", "download"))
+            save_one_btn = button("Save as…", lambda k=kind: self._one(k), "", "download",
+                                  f"Save only {title} right now")
+            save_one_btn.setAccessibleName(f"Save {title} as single file")
+            line.addWidget(save_one_btn)
+            row.mousePressEvent = lambda event, c=check: (
+                c.toggle() if event.button() == Qt.LeftButton else None
+            )
             rows.addWidget(row)
         rows.addStretch(1)
         pick = QHBoxLayout()
-        pick.addWidget(button("Select all", lambda: self._set_all(True), "link"))
-        pick.addWidget(button("Clear", lambda: self._set_all(False), "link"))
+        select_all_btn = button("Select all", lambda: self._set_all(True), "link", tip="Select all visible export formats")
+        select_all_btn.setAccessibleName("Select all exports")
+        clear_btn = button("Clear", lambda: self._set_all(False), "link", tip="Uncheck all export formats")
+        clear_btn.setAccessibleName("Clear selected exports")
+        pick.addWidget(select_all_btn)
+        pick.addWidget(clear_btn)
         pick.addStretch(1)
         self.body.addLayout(pick)
         self.add_button("Close", "", accept=False)
         self.save_all = self.add_button("Export selected to a folder", "primary", handler=self._many, default=True)
         self._refresh()
 
+    def _filter_exports(self, text: str = ""):
+        from omr_exam.reports import EXPORTS
+
+        needle = text.strip().casefold()
+        for kind, (title, hint, _name) in EXPORTS.items():
+            frame = self._row_frames.get(kind)
+            if frame is not None:
+                visible = not needle or needle in f"{title} {hint}".casefold()
+                frame.setVisible(visible)
+
     def _set_all(self, state: bool):
-        for check in self.checks.values():
+        for kind, check in self.checks.items():
+            frame = self._row_frames.get(kind)
+            if state and frame is not None and frame.isHidden():
+                continue
             check.setChecked(state)
 
     def _refresh(self, *_args):
         count = sum(check.isChecked() for check in self.checks.values())
+        total = len(self.checks)
+        for kind, check in self.checks.items():
+            frame = self._row_frames.get(kind)
+            if frame is not None:
+                theme.set_property(frame, "active", "true" if check.isChecked() else "false")
+        self.summary_label.setText(f"{count} of {total} selected")
         self.save_all.setEnabled(count > 0)
         self.save_all.setText(f"Export {count} selected to a folder" if count else "Tick at least one file")
 

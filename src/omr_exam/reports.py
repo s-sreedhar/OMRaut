@@ -5,9 +5,11 @@ import csv
 import re
 import os
 from collections import Counter, defaultdict
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
 
+from omr_exam.resources import load_pdf_logo, logo_image_reader
 from omr_exam.scoring import score_answers
 
 _SPREADSHEET_FORMULA = re.compile(r"^[\s]*[=+@-]")
@@ -20,9 +22,10 @@ def _safe_spreadsheet_text(value: Any) -> Any:
     return value
 
 
-def _require_exportable(config: dict[str, Any], records: list[dict[str, Any]]) -> None:
-    rows = class_results(config, records)
-    unresolved = [row.get("roll_number", "unknown roll") for row in rows
+def _require_exportable(config: dict[str, Any], records: list[dict[str, Any]],
+                        *, rows: list[dict[str, Any]] | None = None) -> None:
+    computed = rows if rows is not None else class_results(config, records)
+    unresolved = [row.get("roll_number") or "unknown roll" for row in computed
                   if row["review_required"] or row.get("total") is None]
     if unresolved:
         raise ValueError(f"Official exports require resolved scans; unresolved sheet(s): {', '.join(map(str, unresolved[:10]))}")
@@ -37,7 +40,7 @@ def class_results(config: dict[str, Any], records: list[dict[str, Any]], set_cod
             continue
         scored = score_answers(config, code, record.get("answers", {}))
         output.append({**record, **scored, "review_required": bool(record.get("review_required"))})
-    output.sort(key=lambda row: (-(row.get("total") or 0), row.get("roll_number", "")))
+    output.sort(key=lambda row: (row.get("total") is None, -(row["total"] if row.get("total") is not None else 0.0), str(row.get("roll_number") or "")))
     previous_score = object()
     current_rank = 0
     for position, row in enumerate(output, 1):
@@ -123,18 +126,21 @@ def summary_stats(config: dict[str, Any], records: list[dict[str, Any]], pass_pe
     result["pass_rate"] = (round(sum((row["percent"] or 0) >= pass_percent for row in eligible) / len(eligible) * 100, 1)
                            if eligible else None)
     reliability = None
-    if len(eligible) > 1:
+    if len(eligible) > 1 and eligible[0].get("questions"):
         counted = [i for i, q in enumerate(eligible[0]["questions"]) if q["status"] != "dropped"]
         k = len(counted)
-        totals = [sum(row["questions"][i]["status"] == "correct" for i in counted) for row in eligible]
-        mean = sum(totals) / len(totals)
-        variance = sum((t - mean) ** 2 for t in totals) / len(totals)
-        if k > 1 and variance > 0:
-            pq = 0.0
-            for i in counted:
-                p = sum(row["questions"][i]["status"] == "correct" for row in eligible) / len(eligible)
-                pq += p * (1 - p)
-            reliability = round(k / (k - 1) * (1 - pq / variance), 3)
+        if k > 1:
+            totals = [sum(row["questions"][i]["status"] == "correct" for i in counted if i < len(row.get("questions", [])))
+                      for row in eligible]
+            mean = sum(totals) / len(totals)
+            variance = sum((t - mean) ** 2 for t in totals) / len(totals)
+            if variance > 0:
+                pq = 0.0
+                for i in counted:
+                    p = sum(row["questions"][i]["status"] == "correct"
+                            for row in eligible if i < len(row.get("questions", []))) / len(eligible)
+                    pq += p * (1 - p)
+                reliability = round(k / (k - 1) * (1 - pq / variance), 3)
     result["reliability"] = reliability
     return result
 
@@ -267,8 +273,8 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
         from openpyxl.styles import Font, PatternFill
     except ImportError as exc:
         raise RuntimeError("Excel export requires openpyxl") from exc
-    _require_exportable(config, records)
     rows = class_results(config, records)
+    _require_exportable(config, records, rows=rows)
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -284,12 +290,23 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
         sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("percent"), row.get("percentile"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No", _safe_spreadsheet_text(filename), page, imported_at] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
+    for col_idx, column in enumerate(sheet.columns, 1):
+        letter = column[0].column_letter
+        if col_idx <= 15:
+            max_length = max(len(str(cell.value or "")) for cell in column)
+            sheet.column_dimensions[letter].width = min(max(max_length + 2, 10), 32)
+        else:
+            sheet.column_dimensions[letter].width = 7
 
     options = [str(o) for o in config["sheet"]["options"]]
-    summary = summary_stats(config, records)
+    summary = summary_stats(config, records, rows=rows)
     summary_sheet = workbook.create_sheet("Summary", 1)
     summary_sheet.append(["Measure", "Value"])
-    for label_text, value in (("Test", config["test"]["title"]), ("Students scored", summary["students"]),
+    for label_text, value in (("Test", config["test"]["title"]),
+                              ("Class", config["test"].get("class", "")),
+                              ("Subjects", ", ".join(config["test"].get("subjects", []))),
+                              ("Test date", config["test"].get("date", "")),
+                              ("Students scored", summary["students"]),
                               ("Maximum score", summary["maximum"]), ("Average score", summary["mean"]),
                               ("Average percent", summary["mean_percent"]), ("Median", summary["median"]),
                               ("Standard deviation", summary["stdev"]), ("Highest", summary["high"]), ("Lowest", summary["low"]),
@@ -343,18 +360,20 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
     return path
 
 
-def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                      *, logo: str | Path | bool | None = None) -> Path:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-    from reportlab.lib.styles import getSampleStyleSheet
     from xml.sax.saxutils import escape
-    _require_exportable(config, records)
     rows = class_results(config, records)
+    _require_exportable(config, records, rows=rows)
+    stats = summary_stats(config, records, rows=rows)
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), title=f"{config['test']['title']} results")
     _colors, styles = _pdf_styles()
+    logo_data = load_pdf_logo(logo)
     data = [["Rank", "Roll", "Student", "Class", "Set", "Score", "Correct", "Wrong", "Blank", "Source file", "Imported at (UTC)"]]
     for row in rows:
         filename, _page, imported_at = source_file_details(row)
@@ -363,9 +382,15 @@ def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], out
                      Paragraph(escape(filename), styles["ReportSmall"]), Paragraph(escape(imported_at), styles["ReportSmall"])])
     table = Table(data, repeatRows=1, colWidths=[28, 50, 90, 42, 28, 42, 38, 38, 34, 145, 96])
     table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17324d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#aab5bf")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f8")]), ("FONTSIZE", (0, 0), (-1, -1), 8), ("PADDING", (0, 0), (-1, -1), 5)]))
-    content = [Paragraph(escape(config["test"]["title"]), styles["Title"]),
-               Paragraph(escape(f"{config['test']['class']} · {', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
-               Spacer(1, 12), table, PageBreak()]
+    summary_line = (f"Students: {stats['students']}  |  Mean: {stats['mean']} ({stats['mean_percent']}%)  |  "
+                    f"Median: {stats['median']}  |  High: {stats['high']}  |  Low: {stats['low']}  |  "
+                    f"Pass rate: {stats['pass_rate']}%  |  KR-20: {stats['reliability'] if stats['reliability'] is not None else '—'}")
+    content = _pdf_header_with_logo(
+        [Paragraph(escape(config["test"]["title"]), styles["ReportTitle"]),
+         Paragraph(escape(f"{config['test']['class']} · {', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
+         Paragraph(escape(summary_line), styles["ReportMuted"])],
+        doc.width, logo_data,
+    ) + [Spacer(1, 10), table, PageBreak()]
 
     def add_analysis(title: str, headers: list[str], rows: list[list[Any]], widths: list[int]) -> None:
         content.extend([Paragraph(escape(title), styles["Heading1"]), Spacer(1, 6)])
@@ -402,6 +427,7 @@ def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], out
                  [210, 90, 90, 210])
     doc.build(content)
     return path
+
 
 
 def export_item_analysis_csv(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
@@ -549,18 +575,19 @@ def export_subject_analysis_csv(config: dict[str, Any], records: list[dict[str, 
     return path
 
 
-def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                                  *, logo: str | Path | bool | None = None) -> Path:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-    from reportlab.lib.styles import getSampleStyleSheet
     from xml.sax.saxutils import escape
     rows = class_results(config, records)
     _require_exportable(config, records)
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = SimpleDocTemplate(str(path), pagesize=A4, title=f"{config['test']['title']} student scorecards")
-    styles = getSampleStyleSheet()
+    _colors, styles = _pdf_styles()
+    logo_data = load_pdf_logo(logo)
     content = []
     question_meta = {int(q["id"]): q for q in config["questions"]}
     for index, row in enumerate(rows):
@@ -568,10 +595,14 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
             content.append(PageBreak())
         name = row.get("student_name") or "Student"
         identity = f"{name} · Roll {row.get('roll_number', '')} · {row.get('class_name') or config['test']['class']}" + (f" · Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "")
-        content.extend([Paragraph(escape(config["test"]["title"]), styles["Title"]),
-                        Paragraph(escape(f"{', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
-                        Paragraph(escape(f"Score {row.get('total')} · Rank {row.get('rank')} · Correct {row.get('correct')} · Incorrect {row.get('incorrect')} · Blank {row.get('blank')}"), styles["Normal"]), Spacer(1, 12)])
-        content.append(Paragraph(escape(_source_line(row)), styles["Normal"]))
+        content.extend(_pdf_header_with_logo(
+            [Paragraph(escape(config["test"]["title"]), styles["ReportTitle"]),
+             Paragraph(escape(f"{', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
+             Paragraph(escape(f"Score {row.get('total')} · Rank {row.get('rank')} · Correct {row.get('correct')} · Incorrect {row.get('incorrect')} · Blank {row.get('blank')}"), styles["Normal"]),
+             Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
+            doc.width, logo_data,
+        ))
+        content.append(Spacer(1, 10))
         table_rows = [[Paragraph(escape(identity), styles["Heading3"]), "", "", "", "", ""],
                       ["Q", "Section / topic", "Student", "Key", "Result", "Points"]]
         q_subject = _subject_for_question(config, row.get("set_code"))
@@ -591,6 +622,7 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
         content.append(table)
     doc.build(content)
     return path
+
 
 
 def _subject_for_question(config: dict[str, Any], set_code: str | None = None) -> dict[str, str]:
@@ -637,9 +669,38 @@ def _pdf_styles():
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
     styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="ReportTitle", parent=styles["Title"], alignment=0, spaceAfter=4))
     styles.add(ParagraphStyle(name="ReportSmall", parent=styles["BodyText"], fontName="Helvetica", fontSize=7, leading=8))
     styles.add(ParagraphStyle(name="ReportMuted", parent=styles["BodyText"], textColor=colors.HexColor("#526477"), fontSize=8, leading=10))
     return colors, styles
+
+
+def _pdf_header_with_logo(left_flowables: list[Any], doc_width: float,
+                          logo_data: tuple[bytes, int, int] | None,
+                          *, max_w: float = 96.0, max_h: float = 40.0) -> list[Any]:
+    """Place a top-right aligned logo alongside left-aligned title flowables."""
+    if logo_data is None:
+        return list(left_flowables)
+    from reportlab.platypus import Image, Table, TableStyle
+
+    raw, width_px, height_px = logo_data
+    scale = min(max_w / max(1.0, width_px), max_h / max(1.0, height_px))
+    drawn_w = width_px * scale
+    drawn_h = height_px * scale
+    img = Image(BytesIO(raw), width=drawn_w, height=drawn_h)
+    img.hAlign = "RIGHT"
+    logo_col_w = drawn_w + 10.0
+    left_col_w = max(120.0, doc_width - logo_col_w)
+    banner = Table([[left_flowables, img]], colWidths=[left_col_w, logo_col_w])
+    banner.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return [banner]
 
 
 def _styled_table(data, widths=None, *, repeat=1, font_size=7):
@@ -659,7 +720,8 @@ def _styled_table(data, widths=None, *, repeat=1, font_size=7):
     return result
 
 
-def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                                  *, logo: str | Path | bool | None = None) -> Path:
     """Ranked mark list with per-subject scores, matching the supplied section-wise list."""
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -672,9 +734,12 @@ def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=22, rightMargin=22, topMargin=24, bottomMargin=24,
                             title=f"{config['test']['title']} subject-wise mark list")
     colors, styles = _pdf_styles()
-    content = [Paragraph("SUBJECT-WISE MARK LIST", styles["Title"]),
-               Paragraph(escape(f"{config['test']['title']}  |  {config['test']['class']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
-               Spacer(1, 10)]
+    logo_data = load_pdf_logo(logo)
+    content = _pdf_header_with_logo(
+        [Paragraph("SUBJECT-WISE MARK LIST", styles["ReportTitle"]),
+         Paragraph(escape(f"{config['test']['title']}  |  {config['test']['class']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"])],
+        doc.width, logo_data,
+    ) + [Spacer(1, 10)]
     headers = ["Rank", "Roll number", "Candidate name", "Uploaded file", "Imported at (UTC)", *subjects, "Total", "%"]
     data = [headers]
     for row in rows:
@@ -690,15 +755,19 @@ def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str
     return path
 
 
-def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+
+def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                                  *, logo: str | Path | bool | None = None) -> Path:
     """Per-candidate response analysis with topic, key, answer, result, and item rates."""
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
     from xml.sax.saxutils import escape
 
-    _require_exportable(config, records)
     rows = class_results(config, records)
-    eligible = _eligible(config, records)
+    _require_exportable(config, records, rows=rows)
+    eligible = _eligible(config, records, rows=rows)
+    overall_stats = summary_stats(config, records, rows=rows)
+    maximum = max_score(config)
     stats_by_set = {code: {item["question"]: item for item in item_analysis(config, records, code)}
                     for code in config["sets"]}
     question_meta = {int(question["id"]): question for question in config["questions"]}
@@ -706,25 +775,28 @@ def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=20, rightMargin=20, topMargin=22, bottomMargin=22,
                             title=f"{config['test']['title']} candidate response analysis")
     colors, styles = _pdf_styles()
+    logo_data = load_pdf_logo(logo)
     content = []
     for index, row in enumerate(rows):
         if index:
             content.append(PageBreak())
         q_subject = _subject_for_question(config, row.get("set_code"))
         row_subjects = ", ".join(dict.fromkeys(q_subject.values())) or ", ".join(config["test"]["subjects"])
-        content.extend([Paragraph("QUESTION RESPONSE ANALYSIS", styles["Title"]),
-                        Paragraph(escape(f"{config['test']['title']}  |  {config['test']['date']}  |  {row_subjects}"), styles["Normal"]),
-                        Spacer(1, 5),
-                        Paragraph(escape(f"{row.get('student_name') or 'Student'}  |  Roll {row.get('roll_number')}  |  Class {row.get('class_name') or config['test']['class']}  |  Set {row.get('set_code')}"), styles["Heading3"]),
-                        Paragraph(escape(f"Score {row.get('total'):g}/{max_score(config):g} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%  |  Class average {summary_stats(config, records)['mean']}"), styles["ReportMuted"]),
-                        Spacer(1, 7)])
-        content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
+        content.extend(_pdf_header_with_logo(
+            [Paragraph("QUESTION RESPONSE ANALYSIS", styles["ReportTitle"]),
+             Paragraph(escape(f"{config['test']['title']}  |  {config['test']['date']}  |  {row_subjects}"), styles["Normal"]),
+             Paragraph(escape(f"{row.get('student_name') or 'Student'}  |  Roll {row.get('roll_number')}  |  Class {row.get('class_name') or config['test']['class']}  |  Set {row.get('set_code')}"), styles["Heading3"]),
+             Paragraph(escape(f"Score {row.get('total'):g}/{maximum:g} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%  |  Class average {overall_stats['mean']}"), styles["ReportMuted"]),
+             Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
+            doc.width, logo_data,
+        ))
+        content.append(Spacer(1, 7))
         headers = ["Q", "ATT%", "RIGHT%", "WRONG%", "SUBJECT", "TOPIC / SECTION", "KEY", "ANSWER", "RESULT", "MARKS"]
         data = [headers]
         status_counts = defaultdict(int)
         for answer in row["questions"]:
             qid = int(answer["question"]); meta = question_meta[qid]
-            rates = stats_by_set[row["set_code"]].get(qid, {})
+            rates = stats_by_set.get(row["set_code"], {}).get(qid, {})
             denominator = max(1, len(eligible))
             attempted = int(rates.get("attempted", 0)); correct = int(rates.get("correct_count", 0))
             status_counts[answer["status"]] += 1
@@ -745,7 +817,9 @@ def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str
     return path
 
 
-def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+
+def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                          *, logo: str | Path | bool | None = None) -> Path:
     """Per-candidate summary by section/topic, including question numbers by outcome."""
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
@@ -758,6 +832,7 @@ def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]],
     doc = SimpleDocTemplate(str(path), pagesize=A4, leftMargin=30, rightMargin=30, topMargin=28, bottomMargin=28,
                             title=f"{config['test']['title']} sub-section report")
     colors, styles = _pdf_styles()
+    logo_data = load_pdf_logo(logo)
     content = []
     for index, row in enumerate(rows):
         if index:
@@ -773,9 +848,13 @@ def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]],
             outcome = "correct" if answer["status"] in {"correct", "bonus"} else "wrong" if answer["status"] == "incorrect" else "left"
             group[outcome].append(str(answer["question"]))
             group["points"] += float(answer.get("points", 0))
-        content.extend([Paragraph("SUB-SECTION PERFORMANCE", styles["Title"]),
-                        Paragraph(escape(f"{config['test']['title']}  |  {row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Rank {row.get('rank')}  |  Score {row.get('total')}"), styles["Normal"]), Spacer(1, 10)])
-        content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
+        content.extend(_pdf_header_with_logo(
+            [Paragraph("SUB-SECTION PERFORMANCE", styles["ReportTitle"]),
+             Paragraph(escape(f"{config['test']['title']}  |  {row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Rank {row.get('rank')}  |  Score {row.get('total')}"), styles["Normal"]),
+             Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
+            doc.width, logo_data,
+        ))
+        content.append(Spacer(1, 8))
         data = [["Section", "Topic", "Qs", "Correct", "Wrong", "Unattempted", "Score"]]
         for (section, topic), group in sorted(groups.items()):
             data.append([section, topic or "-", len(group["questions"]), len(group["correct"]), len(group["wrong"]), len(group["left"]), round(group["points"], 2)])
@@ -790,7 +869,9 @@ def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]],
     return path
 
 
-def export_item_statistics_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+
+def export_item_statistics_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                               *, logo: str | Path | bool | None = None) -> Path:
     """Expanded test item report with score statistics, difficulty, discrimination, and distractors."""
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -806,11 +887,15 @@ def export_item_statistics_pdf(config: dict[str, Any], records: list[dict[str, A
     doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=22, rightMargin=22, topMargin=24, bottomMargin=24,
                             title=f"{config['test']['title']} expanded item statistics")
     colors, styles = _pdf_styles()
+    logo_data = load_pdf_logo(logo)
     score_summary = (f"Students {stats['students']}  |  Mean {stats['mean']}  |  Median {stats['median']}  |  SD {stats['stdev']}  |  "
                      f"High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%  |  KR-20 {stats['reliability']}")
-    content = [Paragraph("TEST ITEM ANALYSIS", styles["Title"]),
-               Paragraph(escape(f"{config['test']['title']}  |  {', '.join(config['test']['subjects'])}  |  {config['test']['date']}"), styles["Normal"]),
-               Spacer(1, 6), Paragraph(escape(score_summary), styles["ReportMuted"]), Spacer(1, 10)]
+    content = _pdf_header_with_logo(
+        [Paragraph("TEST ITEM ANALYSIS", styles["ReportTitle"]),
+         Paragraph(escape(f"{config['test']['title']}  |  {', '.join(config['test']['subjects'])}  |  {config['test']['date']}"), styles["Normal"]),
+         Paragraph(escape(score_summary), styles["ReportMuted"])],
+        doc.width, logo_data,
+    ) + [Spacer(1, 10)]
     headers = ["Q", "Section", "Topic", "Key", "Correct", "Attempted", "Difficulty", "Discrimination", *[f"{o} picks" for o in config["sheet"]["options"]], "Blank"]
     data = [headers]
     for item in items:
@@ -829,34 +914,26 @@ def export_item_statistics_pdf(config: dict[str, Any], records: list[dict[str, A
     return path
 
 
-def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+
+def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                          *, logo: str | Path | bool | None = None) -> Path:
     """Individual summary pages with subject performance against class average and topper."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.colors import HexColor
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Flowable
     from xml.sax.saxutils import escape
 
-    _require_exportable(config, records)
     rows = class_results(config, records)
-    eligible = _eligible(config, records)
-    stats = summary_stats(config, records)
+    _require_exportable(config, records, rows=rows)
+    eligible = _eligible(config, records, rows=rows)
+    stats = summary_stats(config, records, rows=rows)
     subjects = _all_test_subjects(config)
-    dropped_ids = {str(item) for item in config["scoring"].get("dropped_questions", [])}
 
-    def _maxima_for_set(code: str | None) -> dict[str, float]:
-        s_map = _subject_for_question(config, code)
-        result: dict[str, float] = defaultdict(float)
-        for question in config["questions"]:
-            qid = str(question["id"])
-            if qid not in dropped_ids:
-                result[s_map[qid]] += float(config["scoring"]["correct"])
-        return result
-
-    default_maxima = _maxima_for_set(None)
-    maxima_by_set = {code: _maxima_for_set(code) for code in config.get("sets", {})}
+    default_maxima = subject_max_scores(config, None)
+    maxima_by_set = {code: subject_max_scores(config, code) for code in config.get("sets", {})}
     maxima = maxima_by_set.get(config["sheet"]["set_codes"][0], default_maxima) if config.get("sheet", {}).get("set_codes") else default_maxima
 
-    class_subjects = {row.get("roll_number"): _student_subject_scores(row, _subject_for_question(config, row.get("set_code"))) for row in eligible}
+    eligible_subject_scores = [_student_subject_scores(row, _subject_for_question(config, row.get("set_code"))) for row in eligible]
 
     class ComparisonBars(Flowable):
         def __init__(self, student, student_maxima=None, width=520):
@@ -869,7 +946,7 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
             colors_ = {"student": "#087E73", "average": "#4C78A8", "topper": "#D08A22"}
             y = self.height - 16
             for subject in subjects:
-                values = [class_subjects.get(row.get("roll_number"), {}).get(subject, 0) for row in eligible]
+                values = [scores.get(subject, 0) for scores in eligible_subject_scores]
                 average = sum(values) / len(values) if values else 0
                 top = max(values, default=0)
                 mine = self.student.get(subject, 0)
@@ -878,7 +955,7 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
                 for offset, (label_, value, colour) in enumerate((("You", mine, colors_["student"]), ("Avg", average, colors_["average"]), ("Top", top, colors_["topper"]))):
                     bar_y = y - 11 - offset * 11
                     canvas.setFillColorRGB(.9, .92, .94); canvas.rect(92, bar_y, self.width - 140, 6, fill=1, stroke=0)
-                    canvas.setFillColor(HexColor(colour)); canvas.rect(92, bar_y, (self.width - 140) * max(0, value) / maximum, 6, fill=1, stroke=0)
+                    canvas.setFillColor(HexColor(colour)); canvas.rect(92, bar_y, (self.width - 140) * min(maximum, max(0, value)) / maximum, 6, fill=1, stroke=0)
                     canvas.setFillColorRGB(.28, .34, .4); canvas.drawString(4, bar_y, label_)
                     canvas.drawRightString(self.width, bar_y, f"{value:.2f} / {maximum:.2f}")
                 y -= 54
@@ -887,27 +964,162 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
     doc = SimpleDocTemplate(str(path), pagesize=A4, leftMargin=38, rightMargin=38, topMargin=30, bottomMargin=30,
                             title=f"{config['test']['title']} assessment reports")
     colors, styles = _pdf_styles()
+    logo_data = load_pdf_logo(logo)
     content = []
     for index, row in enumerate(rows):
         if index:
             content.append(PageBreak())
         student_maxima = maxima_by_set.get(row.get("set_code"), default_maxima)
         by_subject = _student_subject_scores(row, _subject_for_question(config, row.get("set_code")))
-        content.extend([Paragraph("TEST PERFORMANCE ANALYSIS", styles["Title"]),
-                        Paragraph(escape(f"{config['test']['title']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
-                        Spacer(1, 8), Paragraph(escape(f"{row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Class {row.get('class_name') or config['test']['class']}"), styles["Heading2"]),
-                        Paragraph(escape(f"Score {row.get('total')}/{max_score(config)} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%"), styles["Heading3"]),
-                        Paragraph(escape(f"Candidates {stats['students']}  |  Average {stats['mean']}  |  High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%"), styles["ReportMuted"]),
-                        Spacer(1, 10), Paragraph("Subject analysis: your score compared with the class average and highest score", styles["Heading2"]),
+        content.extend(_pdf_header_with_logo(
+            [Paragraph("TEST PERFORMANCE ANALYSIS", styles["ReportTitle"]),
+             Paragraph(escape(f"{config['test']['title']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
+             Paragraph(escape(f"{row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Class {row.get('class_name') or config['test']['class']}"), styles["Heading2"]),
+             Paragraph(escape(f"Score {row.get('total')}/{max_score(config)} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%"), styles["Heading3"]),
+             Paragraph(escape(f"Candidates {stats['students']}  |  Average {stats['mean']}  |  High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%"), styles["ReportMuted"]),
+             Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
+            doc.width, logo_data,
+        ))
+        content.extend([Spacer(1, 8), Paragraph("Subject analysis: your score compared with the class average and highest score", styles["Heading2"]),
                         ComparisonBars(by_subject, student_maxima), Spacer(1, 8)])
-        content.append(Paragraph(escape(_source_line(row)), styles["ReportMuted"]))
         table_data = [["Subject", "Your score", "Maximum", "Class average", "Top score"]]
         for subject in subjects:
-            values = [class_subjects.get(candidate.get("roll_number"), {}).get(subject, 0) for candidate in eligible]
+            values = [scores.get(subject, 0) for scores in eligible_subject_scores]
             table_data.append([subject, round(by_subject.get(subject, 0), 2), round(student_maxima.get(subject, 0), 2),
                                round(sum(values) / len(values), 2) if values else 0, round(max(values, default=0), 2)])
         content.append(_styled_table(table_data, [130, 75, 65, 85, 75], font_size=7))
     doc.build(content)
+    return path
+
+
+
+def _format_mark_list_date(raw_date: Any) -> str:
+    text = str(raw_date or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        yyyy, mm, dd = text.split("-")
+        return f"{dd}/{mm}/{yyyy}"
+    return text
+
+
+def export_mark_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path,
+                         *, logo: str | Path | bool | None = None) -> Path:
+    """Export the clean ranked Mark List PDF with Total (R, W, B), Marks, % and Rank columns."""
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
+
+    rows = class_results(config, records)
+    _require_exportable(config, records, rows=rows)
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logo_info = logo_image_reader(logo)
+
+    maximum = max_score(config)
+    max_label = f"{maximum:g}" if maximum else "0"
+    test_title = str(config.get("test", {}).get("title") or "")
+    test_date = _format_mark_list_date(config.get("test", {}).get("date"))
+    class_name = str(config.get("test", {}).get("class") or "").strip()
+    subtitle_left = f"{test_title} - {test_date} (Max. Marks: {max_label})" if test_date else f"{test_title} (Max. Marks: {max_label})"
+    subtitle_right = f"Class : {class_name}" if class_name else "Class :"
+
+    left_margin = 54
+    right_margin = 54
+    doc = SimpleDocTemplate(
+        str(path),
+        pagesize=A4,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=96,
+        bottomMargin=36,
+        title=f"Mark List - {test_title}",
+    )
+
+    def draw_header(canvas_obj, document):
+        canvas_obj.saveState()
+        page_w, page_h = A4
+        header_top = page_h - 24
+        if logo_info is not None:
+            logo_reader, width_px, height_px = logo_info
+            scale = min(88.0 / max(1.0, width_px), 36.0 / max(1.0, height_px))
+            drawn_w = width_px * scale
+            drawn_h = height_px * scale
+            # Right-align logo flush with table/Class margin, cleanly above Class : line.
+            canvas_obj.drawImage(
+                logo_reader,
+                page_w - right_margin - drawn_w,
+                header_top - drawn_h,
+                drawn_w,
+                drawn_h,
+            )
+        canvas_obj.setFillColor(colors.HexColor("#111827"))
+        canvas_obj.setFont("Helvetica-Bold", 14.0)
+        canvas_obj.drawString(left_margin, page_h - 46, "Mark List")
+        canvas_obj.setFont("Helvetica", 9.5)
+        canvas_obj.drawString(left_margin, page_h - 74, subtitle_left)
+        canvas_obj.drawRightString(page_w - right_margin, page_h - 74, subtitle_right)
+        canvas_obj.restoreState()
+
+    name_style = ParagraphStyle(
+        "MarkListName",
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=10.5,
+        textColor=colors.HexColor("#111827"),
+    )
+
+    table_data: list[list[Any]] = [
+        ["", "", "Total", "", "", "", "", ""],
+        ["Roll No", "Name", "R", "W", "B", "Marks", "%", "Rank"],
+    ]
+    previous_score: Any = object()
+    dense_rank = 0
+    for row in rows:
+        total = float(row.get("total") or 0.0)
+        if total != previous_score:
+            dense_rank += 1
+            previous_score = total
+        pct = max(0.0, (total / maximum) * 100.0) if maximum else 0.0
+        student_name = str(row.get("student_name") or "").strip()
+        name_cell: Any = Paragraph(escape(student_name), name_style) if student_name else ""
+        table_data.append([
+            str(row.get("roll_number") or ""),
+            name_cell,
+            str(int(row.get("correct", 0))),
+            str(int(row.get("incorrect", 0))),
+            str(int(row.get("blank", 0))),
+            f"{total:.2f}",
+            f"{pct:.2f}",
+            str(dense_rank),
+        ])
+
+    col_widths = [82, 173, 30, 30, 30, 56, 46, 40]
+    table = Table(table_data, repeatRows=2, colWidths=col_widths)
+    rule_color = colors.HexColor("#1f2937")
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, 1), 9.0),
+        ("FONTSIZE", (0, 2), (-1, -1), 8.5),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
+        ("SPAN", (2, 0), (4, 0)),
+        ("ALIGN", (2, 0), (4, 0), "CENTER"),
+        ("ALIGN", (0, 1), (1, -1), "LEFT"),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.75, rule_color),
+        ("LINEBELOW", (0, 1), (-1, 1), 0.75, rule_color),
+        ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f4f4f5")]),
+        ("TOPPADDING", (0, 0), (-1, 0), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
+        ("TOPPADDING", (0, 1), (-1, 1), 1),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 4),
+        ("TOPPADDING", (0, 2), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 2), (-1, -1), 2.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    doc.build([table], onFirstPage=draw_header, onLaterPages=draw_header)
     return path
 
 
@@ -928,6 +1140,7 @@ def export_distractor_analysis_csv(config: dict[str, Any], records: list[dict[st
 EXPORTS: dict[str, tuple[str, str, str]] = {
     "xlsx": ("Excel workbook", "Marklist plus summary, class and question analysis sheets", "marklist.xlsx"),
     "csv": ("Marklist (CSV)", "Ranked scores and every answer, for any spreadsheet", "marklist.csv"),
+    "mark-list": ("Mark List (PDF)", "Ranked mark list with R, W, B counts, Marks, % and Rank", "mark-list.pdf"),
     "pdf": ("Results report (PDF)", "Printable ranked list with the question analysis", "results-report.pdf"),
     "subject-list": ("Subject-wise mark list (PDF)", "Candidate ranks with scores for each subject", "subject-wise-mark-list.pdf"),
     "cards": ("Student scorecards (PDF)", "One page per student, question by question", "student-scorecards.pdf"),
@@ -943,19 +1156,31 @@ EXPORTS: dict[str, tuple[str, str, str]] = {
 
 
 def export_function(kind: str):
-    return {"xlsx": export_xlsx, "csv": export_csv, "pdf": export_report_pdf, "cards": export_student_scorecards_pdf,
-            "subject-list": export_subject_score_list_pdf, "responses": export_candidate_response_pdf,
-            "assessment": export_assessment_pdf, "sections": export_subsection_pdf,
-            "item-report": export_item_statistics_pdf,
-            "item": export_item_analysis_csv, "distractor": export_distractor_analysis_csv,
-            "topic": export_topic_analysis_csv, "subject": export_subject_analysis_csv}[kind]
+    mapping = {"xlsx": export_xlsx, "csv": export_csv, "mark-list": export_mark_list_pdf,
+               "pdf": export_report_pdf, "cards": export_student_scorecards_pdf,
+               "subject-list": export_subject_score_list_pdf, "responses": export_candidate_response_pdf,
+               "assessment": export_assessment_pdf, "sections": export_subsection_pdf,
+               "item-report": export_item_statistics_pdf,
+               "item": export_item_analysis_csv, "distractor": export_distractor_analysis_csv,
+               "topic": export_topic_analysis_csv, "subject": export_subject_analysis_csv}
+    if kind not in mapping:
+        raise ValueError(f"Unknown export format: {kind!r}")
+    return mapping[kind]
+
+
+PDF_EXPORT_KINDS = frozenset({"mark-list", "pdf", "cards", "subject-list", "responses", "assessment", "sections", "item-report"})
 
 
 def export_all(config: dict[str, Any], records: list[dict[str, Any]], folder: str | Path,
-               kinds: Iterable[str] | None = None) -> list[Path]:
+               kinds: Iterable[str] | None = None, *, logo: str | Path | bool | None = None) -> list[Path]:
     """Write several exports into one folder in a single step."""
     _require_exportable(config, records)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    return [export_function(kind)(config, records, folder / EXPORTS[kind][2])
-            for kind in (list(kinds) if kinds is not None else list(EXPORTS))]
+    written: list[Path] = []
+    for kind in (list(kinds) if kinds is not None else list(EXPORTS)):
+        exporter = export_function(kind)
+        target = folder / EXPORTS[kind][2]
+        written.append(exporter(config, records, target, logo=logo) if kind in PDF_EXPORT_KINDS
+                       else exporter(config, records, target))
+    return written

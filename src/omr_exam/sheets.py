@@ -9,6 +9,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from omr_exam.layout import create_layout
+from omr_exam.resources import logo_image_reader
 
 MM = 72 / 25.4
 ACCENT = HexColor("#E6007E")
@@ -18,11 +19,11 @@ ROW_PALE = HexColor("#FFF8FB")
 
 
 def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 1, *,
-                       institute: str = "", logo: str | Path | None = None) -> Path:
+                       institute: str = "", logo: str | Path | bool | None = None) -> Path:
     """Create one or more blank answer sheets, with exact registration squares.
 
-    The header can carry the institute name and logo; both are optional and sit clear of the
-    corner squares and bubble areas, so they never affect reading."""
+    The header carries the institute name and logo (defaulting to the bundled logo when omitted);
+    both sit clear of the corner squares and bubble areas, so they never affect reading."""
     if count < 1:
         raise ValueError("count must be at least one")
     layout = create_layout(config)
@@ -31,13 +32,7 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
     page_size = (layout.width * MM, layout.height * MM)
     pdf = canvas.Canvas(str(path), pagesize=page_size, pageCompression=1)
     pdf.setTitle(f"{config['test']['title']} - OMR answer sheet")
-    logo_reader = None
-    if logo and Path(logo).is_file():
-        try:
-            from reportlab.lib.utils import ImageReader
-            logo_reader = ImageReader(str(logo))
-        except Exception:
-            logo_reader = None          # an unreadable logo must never block printing the sheets
+    logo_info = logo_image_reader(logo)
 
     def xy(x: float, y_top: float) -> tuple[float, float]:
         return x * MM, (layout.height - y_top) * MM
@@ -77,11 +72,18 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
                 pdf.circle(hx, hy, 0.58 * MM, stroke=0, fill=1)
         institute_name = (institute or config["test"].get("institute", "") or "QualifyIAS").strip()
         header_right = layout.width - 18.0
-        if logo_reader is not None:
-            box_w, box_h = 22.0, 10.5
-            px, py = xy(header_right - box_w, 12.5 + box_h)
-            pdf.drawImage(logo_reader, px, py, box_w * MM, box_h * MM, preserveAspectRatio=True, anchor="ne", mask="auto")
-            header_right -= box_w + 4.0
+        if logo_info is not None:
+            logo_reader, logo_w_px, logo_h_px = logo_info
+            box_w, box_h = 28.0, 12.0
+            scale = min(box_w / max(1.0, logo_w_px), box_h / max(1.0, logo_h_px))
+            drawn_w = logo_w_px * scale
+            drawn_h = logo_h_px * scale
+            # Align cleanly within y_top=9.0..21.0 so the logo lines up with the title block and stays
+            # well clear of the top-right registration square (x=198..206) and NAME/CLASS boxes (y>=23.5).
+            box_top = 9.0 + (box_h - drawn_h) / 2.0
+            px, py = xy(header_right - drawn_w, box_top + drawn_h)
+            pdf.drawImage(logo_reader, px, py, drawn_w * MM, drawn_h * MM)
+            header_right -= drawn_w + 4.0
         else:
             # Vector wordmark keeps the requested institute identity visible before
             # a custom image logo is added in Settings.

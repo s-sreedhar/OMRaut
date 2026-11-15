@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS batch_log (
 CREATE INDEX IF NOT EXISTS batch_log_batch_id ON batch_log(batch_id,id);
 CREATE TABLE IF NOT EXISTS results (
  id INTEGER PRIMARY KEY, batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
- roll_number TEXT NOT NULL DEFAULT '', set_code TEXT NOT NULL, answers_json TEXT NOT NULL,
+ roll_number TEXT NOT NULL DEFAULT '', scanned_name TEXT NOT NULL DEFAULT '', set_code TEXT NOT NULL, answers_json TEXT NOT NULL,
  score REAL NOT NULL DEFAULT 0, review_required INTEGER NOT NULL DEFAULT 0, image_path TEXT NOT NULL DEFAULT '',
  preview_path TEXT NOT NULL DEFAULT '', thresholds_json TEXT NOT NULL DEFAULT '{}', marks_json TEXT NOT NULL DEFAULT '{}',
  flags_json TEXT NOT NULL DEFAULT '[]', processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -58,7 +58,25 @@ CREATE TABLE IF NOT EXISTS review_drafts (
  payload_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+
+def match_student_by_roll(students_by_roll: dict[str, dict[str, Any]], roll_number: str) -> dict[str, Any] | None:
+    """Resolve a student record by exact roll number, else a unique leading-zero-normalized numeric match."""
+    roll = str(roll_number or "").strip()
+    if not roll:
+        return None
+    if roll in students_by_roll:
+        return students_by_roll[roll]
+    if roll.isdigit():
+        stripped = roll.lstrip("0") or "0"
+        matches = [
+            student for key, student in students_by_roll.items()
+            if key.isdigit() and (key.lstrip("0") or "0") == stripped
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def _roster_header(value: Any) -> str:
@@ -136,6 +154,8 @@ def initialize_database(path: str | Path) -> None:
         if "uploaded_at" not in columns:
             connection.execute("ALTER TABLE results ADD COLUMN uploaded_at TEXT NOT NULL DEFAULT ''")
             connection.execute("UPDATE results SET uploaded_at=COALESCE(NULLIF(processed_at,''),CURRENT_TIMESTAMP) WHERE uploaded_at=''")
+        if "scanned_name" not in columns:
+            connection.execute("ALTER TABLE results ADD COLUMN scanned_name TEXT NOT NULL DEFAULT ''")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS results_batch_image ON results(batch_id,image_path)")
         connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -496,14 +516,15 @@ class Repository:
         return count
 
     def store_read(self, batch_id: int, result: Any, score_result: dict[str, Any]) -> int:
+        scanned_name = str(getattr(result, "student_name", "") or "").strip()
         with _database_connection(self.path) as db:
-            db.execute("""INSERT INTO results(batch_id,roll_number,set_code,answers_json,score,review_required,image_path,preview_path,thresholds_json,marks_json,flags_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id,image_path) DO UPDATE SET
-                roll_number=excluded.roll_number,set_code=excluded.set_code,answers_json=excluded.answers_json,
+            db.execute("""INSERT INTO results(batch_id,roll_number,scanned_name,set_code,answers_json,score,review_required,image_path,preview_path,thresholds_json,marks_json,flags_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id,image_path) DO UPDATE SET
+                roll_number=excluded.roll_number,scanned_name=excluded.scanned_name,set_code=excluded.set_code,answers_json=excluded.answers_json,
                 score=excluded.score,review_required=excluded.review_required,preview_path=excluded.preview_path,
                 thresholds_json=excluded.thresholds_json,marks_json=excluded.marks_json,
                 flags_json=excluded.flags_json,processed_at=CURRENT_TIMESTAMP""",
-                (batch_id, result.roll_number or "", result.set_code or "", json.dumps(result.answers, ensure_ascii=False),
+                (batch_id, result.roll_number or "", scanned_name, result.set_code or "", json.dumps(result.answers, ensure_ascii=False),
                  float(score_result.get("total", 0)), int(bool(result.requires_review)), result.image_path,
                  result.preview_path, json.dumps(result.thresholds, ensure_ascii=False),
                  json.dumps(result.marks, ensure_ascii=False),
@@ -521,9 +542,8 @@ class Repository:
         records = self.results_for_batch(batch_id)
         if not records:
             return
-        with _database_connection(self.path) as db:
-            known_rolls = {str(row[0]) for row in db.execute("SELECT roll_number FROM students").fetchall()}
-        has_roster = bool(known_rolls)
+        students_by_roll = {str(s["roll_number"]): s for s in self.students()}
+        has_roster = bool(students_by_roll)
         roll_counts: dict[str, int] = {}
         for record in records:
             roll = str(record.get("roll_number") or "")
@@ -536,7 +556,7 @@ class Repository:
             flags = [flag for flag in record["flags"] if flag.get("kind") not in identity_kinds]
             if roll and roll_counts.get(roll, 0) > 1:
                 flags.append({"kind": "duplicate_id", "message": f"Roll number {roll} appears more than once in this batch"})
-            elif roll and has_roster and roll not in known_rolls:
+            elif roll and has_roster and match_student_by_roll(students_by_roll, roll) is None:
                 flags.append({"kind": "unknown_id", "message": f"Roll number {roll} is not in the imported student roster"})
             has_identity_issue = any(flag.get("kind") in identity_kinds for flag in flags)
             previous_nonidentity_issues = [flag for flag in record["flags"]
@@ -548,6 +568,13 @@ class Repository:
         if updates:
             with _database_connection(self.path) as db:
                 db.executemany("UPDATE results SET flags_json=?,review_required=? WHERE id=?", updates)
+
+    def find_student_by_roll(self, roll_number: str) -> dict[str, Any] | None:
+        roll = str(roll_number or "").strip()
+        if not roll:
+            return None
+        students_by_roll = {str(s["roll_number"]): s for s in self.students()}
+        return match_student_by_roll(students_by_roll, roll)
 
     def students(self) -> list[dict[str, Any]]:
         with _database_connection(self.path) as db:
@@ -591,13 +618,22 @@ class Repository:
     def results_for_batch(self, batch_id: int) -> list[dict[str, Any]]:
         with _database_connection(self.path) as db:
             db.row_factory = sqlite3.Row
-            rows = db.execute("SELECT r.*,s.name AS student_name,s.class_name FROM results r LEFT JOIN students s ON s.roll_number=r.roll_number WHERE r.batch_id=? ORDER BY r.roll_number,r.image_path", (batch_id,)).fetchall()
+            rows = db.execute("SELECT r.* FROM results r WHERE r.batch_id=? ORDER BY r.roll_number,r.image_path", (batch_id,)).fetchall()
+            student_rows = db.execute("SELECT roll_number,name,class_name FROM students").fetchall()
             results = [dict(row) for row in rows]
+        students_by_roll = {str(s["roll_number"]): dict(s) for s in student_rows}
         for row in results:
             row["answers"] = json.loads(row.pop("answers_json"))
             row["flags"] = json.loads(row.pop("flags_json"))
             row["thresholds"] = json.loads(row.pop("thresholds_json"))
             row["marks"] = json.loads(row.pop("marks_json"))
+            scanned_name = str(row.get("scanned_name") or "").strip()
+            student = match_student_by_roll(students_by_roll, row.get("roll_number") or "")
+            db_name = str(student["name"]).strip() if student else ""
+            row["scanned_name"] = scanned_name
+            row["student_name"] = db_name or scanned_name
+            row["class_name"] = str(student["class_name"]) if student else ""
+            row["in_roster"] = bool(student)
         return results
 
     def correct_answer(self, result_id: int, question_id: str, new_answer: str | None) -> None:
@@ -633,7 +669,7 @@ class Repository:
                 answers = item["answers"]
                 roll_number = str(item["roll_number"])
                 set_code = str(item["set_code"])
-                row = db.execute("SELECT answers_json,set_code,roll_number FROM results WHERE id=?", (result_id,)).fetchone()
+                row = db.execute("SELECT answers_json,set_code,roll_number,scanned_name FROM results WHERE id=?", (result_id,)).fetchone()
                 if row is None:
                     raise KeyError(f"Result {result_id} not found")
                 previous = json.loads(row[0])
@@ -649,8 +685,12 @@ class Repository:
                 if row[1] != set_code:
                     db.execute("INSERT INTO correction_audit(result_id,question_id,old_answer,new_answer) VALUES (?,?,?,?)",
                                (result_id, "__set_code__", row[1], set_code))
-                db.execute("UPDATE results SET roll_number=?,set_code=?,answers_json=?,score=?,review_required=0 WHERE id=?",
-                           (roll_number, set_code, json.dumps(answers, ensure_ascii=False), scored["total"], result_id))
+                scanned_name = str(item["scanned_name"]).strip() if "scanned_name" in item else str(row[3] or "")
+                if "scanned_name" in item and str(row[3] or "") != scanned_name:
+                    db.execute("INSERT INTO correction_audit(result_id,question_id,old_answer,new_answer) VALUES (?,?,?,?)",
+                               (result_id, "__student_name__", str(row[3] or ""), scanned_name))
+                db.execute("UPDATE results SET roll_number=?,scanned_name=?,set_code=?,answers_json=?,score=?,review_required=0 WHERE id=?",
+                           (roll_number, scanned_name, set_code, json.dumps(answers, ensure_ascii=False), scored["total"], result_id))
                 scored_by_id[result_id] = scored
         return scored_by_id
 

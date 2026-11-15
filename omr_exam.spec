@@ -3,7 +3,8 @@ from pathlib import Path
 root = Path(SPECPATH)
 a = Analysis([str(root / "src" / "omr_exam" / "app.py")], pathex=[str(root / "src")],
              binaries=[], datas=[(str(root / "config" / "test-config.schema.json"), "config"),
-                                 (str(root / "config" / "update.json"), "config")],
+                                 (str(root / "config" / "update.json"), "config"),
+                                 (str(root / "docs" / "logo.png"), "docs")],
              hiddenimports=["fitz", "openpyxl", "velopack"], hookspath=[], hooksconfig={}, runtime_hooks=[],
              excludes=[], noarchive=False)
 pyz = PYZ(a.pure)

@@ -25,9 +25,10 @@ from omr_exam.dialogs import (AnswerKeyDialog, BatchLogDialog, BatchPickerDialog
                               ReferenceDataDialog, StudentDialog)
 from omr_exam.icons import icon, icon_size, pixmap
 from omr_exam.ingest import SUPPORTED_SCAN_SUFFIXES, count_scan_pages, scan_files_in_folder
-from omr_exam.reports import (EXPORTS, _all_test_subjects, _student_subject_scores, _subject_for_question, class_results,
-                              distractor_analysis, export_all, export_function, item_analysis, max_score,
+from omr_exam.reports import (EXPORTS, PDF_EXPORT_KINDS, _all_test_subjects, _student_subject_scores, _subject_for_question,
+                              class_results, distractor_analysis, export_all, export_function, item_analysis, max_score,
                               subject_max_scores, subject_summary, summary_stats)
+from omr_exam.resources import default_logo_path
 from omr_exam.review import ReviewPage
 from omr_exam.scan_job import ScanOutcome, ScanProgress, ScanWorker, process_scan_batch
 from omr_exam.sheets import generate_sheet_pdf
@@ -200,6 +201,8 @@ class MainWindow(QMainWindow):
         self.nav_buttons: dict[str, QPushButton] = {}
         self.test_combo = combo(340)
         self.test_combo.setAccessibleName("Active test")
+        self.test_combo.setAccessibleDescription("Select the active test for scanning, review, and results")
+        self.test_combo.setToolTip("Select the active test across all pages")
         self.test_combo.currentIndexChanged.connect(self.select_test)
 
         shell = QWidget()
@@ -229,11 +232,18 @@ class MainWindow(QMainWindow):
         self.review_table = self.review_page.table
         self.review_summary = self.review_page.summary
 
-        for number, (key, _text) in enumerate(NAV_ITEMS, 1):
+        for number, (key, text) in enumerate(NAV_ITEMS, 1):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{number}"), self)
             shortcut.activated.connect(lambda k=key: self.show_page(k))
-            self.nav_buttons[key].setToolTip(f"{self.nav_buttons[key].toolTip()} (Ctrl+{number})".strip())
+            self.nav_buttons[key].setToolTip(f"Open {text} (Ctrl+{number})")
+            self.nav_buttons[key].setAccessibleDescription(f"Switch to {text} page (Ctrl+{number})")
         QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self.new_test)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self.focus_current_search)
+        QShortcut(QKeySequence("F5"), self).activated.connect(self.refresh_current_page)
+        QShortcut(QKeySequence("Ctrl+R"), self).activated.connect(self.refresh_current_page)
+        QShortcut(QKeySequence("Ctrl+O"), self).activated.connect(self._shortcut_open)
+        QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self._shortcut_export)
+        QShortcut(QKeySequence(Qt.Key_Escape), self).activated.connect(self._shortcut_escape)
 
         self._restore_geometry()
         last_test = self.repo.get_setting("last_test_id", "")
@@ -286,6 +296,8 @@ class MainWindow(QMainWindow):
         nav.setObjectName("nav")
         nav.setCheckable(True)
         nav.setCursor(Qt.PointingHandCursor)
+        nav.setAccessibleName(text)
+        nav.setToolTip(f"Open {text}")
         glyph = QIcon()
         for scale in (1.0, 2.0, 3.0):
             glyph.addPixmap(pixmap(icon_name, theme.SIDEBAR_TEXT, 18, scale), QIcon.Normal, QIcon.Off)
@@ -317,12 +329,79 @@ class MainWindow(QMainWindow):
         layout.addWidget(label("ACTIVE TEST", "topbarCaption", wrap=False))
         layout.addWidget(self.test_combo)
         self.topbar_key_pill = Pill("", "neutral")
+        self.topbar_key_pill.setAccessibleName("Answer key status")
+        self.topbar_key_pill.setToolTip("Answer key status for the active test")
         self.topbar_key_pill.hide()
         layout.addWidget(self.topbar_key_pill)
         layout.addStretch(1)
         self.new_test_button = button("New test", self.new_test, "primary", "plus", "Create a new test (Ctrl+N)")
+        self.new_test_button.setAccessibleName("New test")
+        self.new_test_button.setAccessibleDescription("Create a new test from a template (Ctrl+N)")
         layout.addWidget(self.new_test_button)
         return bar
+
+    def focus_current_search(self) -> None:
+        """Focus and select the search bar on the currently visible page (Ctrl+F)."""
+        target = {
+            "tests": getattr(self, "tests_search", None),
+            "students": getattr(self, "student_search", None),
+            "results": getattr(self, "results_search", None),
+            "review": getattr(self.review_page, "search", None),
+        }.get(self._current_page)
+        if isinstance(target, QLineEdit) and target.isVisible():
+            target.setFocus(Qt.ShortcutFocusReason)
+            target.selectAll()
+
+    def refresh_current_page(self) -> None:
+        """Refresh the active view and underlying data (F5 / Ctrl+R)."""
+        if self._scan_worker is not None:
+            return
+        self.refresh_tests(self.active_test_id)
+        self.refresh_students()
+        if self.batch_id is not None:
+            self.repo.reconcile_batch_roster_flags(self.batch_id)
+            self.result_records = self.repo.results_for_batch(self.batch_id)
+        if self._current_page == "dashboard":
+            self.refresh_dashboard()
+        elif self._current_page == "scan":
+            self.refresh_scan_page()
+        elif self._current_page == "review":
+            self.load_review_table()
+        elif self._current_page == "results":
+            self.refresh_results_summary()
+
+    def _shortcut_open(self) -> None:
+        if self._scan_worker is not None:
+            return
+        if self._current_page == "tests":
+            self.import_config()
+        elif self._current_page == "students":
+            self.import_students()
+        elif self._current_page == "scan":
+            if self.upload_button.isEnabled():
+                self.scan_images()
+        elif self._current_page in ("review", "results"):
+            self.load_saved_batch()
+
+    def _shortcut_export(self) -> None:
+        if self._scan_worker is not None:
+            return
+        if self._current_page == "tests" and self.export_config_button.isEnabled():
+            self.export_config()
+        elif self._current_page == "students":
+            self.export_students_json()
+        elif self._current_page == "results" and self.export_main_button.isEnabled():
+            self.open_exports()
+
+    def _shortcut_escape(self) -> None:
+        target = {
+            "tests": getattr(self, "tests_search", None),
+            "students": getattr(self, "student_search", None),
+            "results": getattr(self, "results_search", None),
+            "review": getattr(self.review_page, "search", None),
+        }.get(self._current_page)
+        if isinstance(target, QLineEdit) and (target.hasFocus() or target.text()):
+            target.clear()
 
     def toast(self, text: str, tone: str = "good") -> None:
         self._toast.show_message(text, tone)
@@ -378,12 +457,15 @@ class MainWindow(QMainWindow):
         titles.addWidget(self.flow_title)
         titles.addWidget(self.flow_hint)
         head.addLayout(titles, 1)
-        self.next_button = button("Create a test", self.new_test, "primary", "arrow-right")
+        self.next_button = button("Create a test", self.new_test, "primary", "arrow-right", "Create a new test (Ctrl+N)")
+        self.next_button.setAccessibleName("Next workflow step")
         self.next_button.setLayoutDirection(Qt.RightToLeft)
         head.addWidget(self.next_button, 0, Qt.AlignVCenter)
         fl.addLayout(head)
         fl.addWidget(divider())
         self.stepper = Stepper()
+        self.stepper.setToolTip("Click any workflow step to open it directly")
+        self.stepper.setFocusPolicy(Qt.TabFocus)
         self.stepper.clicked.connect(self._workflow_step_clicked)
         fl.addWidget(self.stepper)
         layout.addWidget(flow)
@@ -394,6 +476,7 @@ class MainWindow(QMainWindow):
         for key, caption, icon_name in (("tests", "Tests", "tests"), ("students", "Students on roster", "students"),
                                         ("sheets", "Sheets scanned", "sheet"), ("pending", "Sheets awaiting review", "review")):
             tile = StatTile(caption, icon_name)
+            tile.setToolTip(f"{caption} summary")
             self.stat_labels[key] = tile
             stats.addWidget(tile)
         self.stat_labels["batches"] = self.stat_labels["sheets"]
@@ -402,14 +485,19 @@ class MainWindow(QMainWindow):
         columns = QHBoxLayout()
         columns.setSpacing(14)
         batches_card, bl = card((1, 14, 1, 6), 10)
-        bl.addLayout(self._card_header("Recent scan batches", "Double-click a batch to review it"))
+        bl.addLayout(self._card_header("Recent scan batches", "Double-click or press Enter to review"))
         self.dashboard_batches_table = table(["Batch", "Test", "Scanned", "Sheets", "Pages", "Status"], 1)
         self.dashboard_batches_table.setFrameShape(QFrame.NoFrame)
         self.dashboard_batches_table.setItemDelegateForColumn(5, PillDelegate(_batch_tone, self.dashboard_batches_table))
         self.dashboard_batches_table.cellDoubleClicked.connect(self.open_dashboard_batch)
+        self.dashboard_batches_table.activated.connect(lambda idx: self.open_dashboard_batch(idx.row(), idx.column()))
         self.dashboard_batches_table.setAccessibleName("Recent scan batches")
+        self.dashboard_batches_table.setAccessibleDescription("Recent scan batches across all tests. Double-click or press Enter on a row to review it.")
+        self.dashboard_batches_table.setToolTip("Double-click or press Enter on a batch to review it")
         self.batches_empty = EmptyState("scan", "No sheets scanned yet",
-                                        "Scanned batches appear here with their review status.")
+                                        "Scanned batches appear here with their review status.",
+                                        (button("Go to Scan sheets", lambda: self.show_page("scan"), "ghost", "scan",
+                                                "Open Scan sheets page (Ctrl+4)"),))
         self.batches_stack = QStackedWidget()
         self.batches_stack.addWidget(self.dashboard_batches_table)
         self.batches_stack.addWidget(self.batches_empty)
@@ -417,14 +505,17 @@ class MainWindow(QMainWindow):
         columns.addWidget(batches_card, 3)
 
         tests_card, tl = card((1, 14, 1, 6), 10)
-        tl.addLayout(self._card_header("Your tests", "Double-click to open"))
+        tl.addLayout(self._card_header("Your tests", "Double-click or press Enter to open"))
         self.dashboard_tests_table = table(["Test", "Created", "ID"], 0)
         self.dashboard_tests_table.setFrameShape(QFrame.NoFrame)
         self.dashboard_tests_table.setColumnHidden(2, True)
         self.dashboard_tests_table.cellDoubleClicked.connect(self.open_dashboard_test)
+        self.dashboard_tests_table.activated.connect(lambda idx: self.open_dashboard_test(idx.row(), idx.column()))
         self.dashboard_tests_table.setAccessibleName("Your tests")
+        self.dashboard_tests_table.setAccessibleDescription("Saved tests. Double-click or press Enter on a row to open it.")
+        self.dashboard_tests_table.setToolTip("Double-click or press Enter on a test to open it")
         self.tests_empty = EmptyState("tests", "No tests yet", "Create your first test from a ready-made template.",
-                                      (button("New test", self.new_test, "primary", "plus"),))
+                                      (button("New test", self.new_test, "primary", "plus", "Create a new test (Ctrl+N)"),))
         self.dash_tests_stack = QStackedWidget()
         self.dash_tests_stack.addWidget(self.dashboard_tests_table)
         self.dash_tests_stack.addWidget(self.tests_empty)
@@ -518,6 +609,8 @@ class MainWindow(QMainWindow):
         self.flow_hint.setText(f"Next step: {next_text.lower()}." if self.config else
                                "Create a test from a template to get started. It takes about a minute.")
         self.next_button.setText(next_text)
+        self.next_button.setAccessibleName(next_text)
+        self.next_button.setToolTip(f"Next step: {next_text}")
         try:
             self.next_button.clicked.disconnect()
         except (RuntimeError, TypeError):
@@ -591,13 +684,18 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ tests & keys
     def _build_tests_page(self) -> QWidget:
+        classes_btn = button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
+                             "View, add, edit, or remove classes and subjects")
+        classes_btn.setAccessibleName("Manage classes and subjects")
+        example_btn = button("JSON example", self.download_test_json_example, "ghost", "download",
+                             "Save a valid test JSON file, then edit and import it")
+        example_btn.setAccessibleName("Download test JSON example")
+        import_btn = button("Import exam file", self.import_config, "", "upload", "Import a test saved as JSON (Ctrl+O)")
+        import_btn.setAccessibleName("Import exam file")
+        new_btn = button("New test", self.new_test, "primary", "plus", "Create a new test (Ctrl+N)")
+        new_btn.setAccessibleName("New test")
         page, layout = _page("Tests", "Each test has its own answer sheet, answer key, and scan batches.",
-                             (button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
-                                     "View, add, edit, or remove classes and subjects"),
-                              button("JSON example", self.download_test_json_example, "ghost", "download",
-                                     "Save a valid test JSON file, then edit and import it"),
-                              button("Import exam file", self.import_config, "", "upload", "Import a test saved as JSON"),
-                              button("New test", self.new_test, "primary", "plus")))
+                             (classes_btn, example_btn, import_btn, new_btn))
         split = QHBoxLayout()
         split.setSpacing(14)
 
@@ -611,8 +709,18 @@ class MainWindow(QMainWindow):
         self.tests_search.setClearButtonEnabled(True)
         self.tests_search.addAction(icon("search", theme.MUTED, 16), QLineEdit.LeadingPosition)
         self.tests_search.setAccessibleName("Search tests")
+        self.tests_search.setAccessibleDescription("Filter tests by title, class, subject, or answer key status")
+        self.tests_search.setToolTip("Search tests by name, class, subject, or key status (Ctrl+F)")
         self.tests_search.textChanged.connect(self._apply_tests_filter)
         search_bar.addWidget(self.tests_search, 1)
+        self.tests_filter = combo(160)
+        self.tests_filter.setAccessibleName("Filter tests by key status")
+        self.tests_filter.setAccessibleDescription("Show all tests, only tests with complete answer keys, or only tests with incomplete keys")
+        self.tests_filter.setToolTip("Filter tests by answer key completeness")
+        for title, key in (("All statuses", "all"), ("Key complete", "complete"), ("Key incomplete", "incomplete")):
+            self.tests_filter.addItem(title, key)
+        self.tests_filter.currentIndexChanged.connect(self._apply_tests_filter)
+        search_bar.addWidget(self.tests_filter)
         self.tests_hint = label("", "hint", wrap=False)
         search_bar.addWidget(self.tests_hint)
         ll.addLayout(search_bar)
@@ -623,13 +731,16 @@ class MainWindow(QMainWindow):
         self.tests_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Interactive)
         self.tests_table.setColumnWidth(5, 190)
         self.tests_table.cellClicked.connect(self._tests_table_clicked)
+        self.tests_table.cellDoubleClicked.connect(lambda _r, _c=0: self.edit_keys())
         self.tests_table.currentCellChanged.connect(lambda row, column, _r, _c: self._tests_table_clicked(row, column))
         self.tests_table.setAccessibleName("Tests")
+        self.tests_table.setAccessibleDescription("Saved tests with class, subjects, question count, sets, and answer key status. Select a row to inspect details or double-click to edit the answer key.")
+        self.tests_table.setToolTip("Select a test to view details, or double-click a row to edit its answer key")
         self.tests_page_empty = EmptyState("tests", "Create your first test",
                                            "Pick a ready-made template, name the test, and enter the answer key. "
                                            "The app then gives you a printable answer sheet.",
-                                           (button("New test", self.new_test, "primary", "plus"),
-                                            button("Import exam file", self.import_config, "", "upload")))
+                                           (button("New test", self.new_test, "primary", "plus", "Create a new test (Ctrl+N)"),
+                                            button("Import exam file", self.import_config, "", "upload", "Import a test saved as JSON")))
         self.tests_stack = QStackedWidget()
         self.tests_stack.addWidget(self.tests_table)
         self.tests_stack.addWidget(self.tests_page_empty)
@@ -659,13 +770,21 @@ class MainWindow(QMainWindow):
         self.test_facts.setColumnStretch(1, 1)
         dl.addLayout(self.test_facts)
         dl.addWidget(divider())
-        self.key_button = button("Enter answer key", self.edit_keys, "primary", "key")
-        self.sheet_button = button("Print answer sheets (PDF)", self.make_sheets, "", "printer")
-        self.scan_button = button("Scan sheets for this test", lambda: self.show_page("scan"), "", "scan")
+        self.key_button = button("Enter answer key", self.edit_keys, "primary", "key",
+                                 "Enter or edit the answer key for this test")
+        self.key_button.setAccessibleName("Answer key")
+        self.sheet_button = button("Print answer sheets (PDF)", self.make_sheets, "", "printer",
+                                   "Save printable PDF answer sheets (print at 100% scale)")
+        self.sheet_button.setAccessibleName("Print answer sheets PDF")
+        self.scan_button = button("Scan sheets for this test", lambda: self.show_page("scan"), "", "scan",
+                                  "Open Scan sheets for this test (Ctrl+4)")
+        self.scan_button.setAccessibleName("Scan sheets for this test")
         self.export_config_button = button("Export exam file", self.export_config, "ghost", "download",
-                                           "Save this test as JSON to reuse it on another computer")
+                                           "Save this test as JSON to reuse it on another computer (Ctrl+E)")
+        self.export_config_button.setAccessibleName("Export exam file")
         self.delete_test_button = button("Delete this test", self.delete_test, "danger", "trash",
                                          "Permanently remove this test and its scan results")
+        self.delete_test_button.setAccessibleName("Delete this test")
         for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button):
             dl.addWidget(action)
         dl.addStretch(1)
@@ -673,6 +792,13 @@ class MainWindow(QMainWindow):
         dl.addWidget(self.delete_test_button)
         split.addWidget(detail)
         layout.addLayout(split, 1)
+        QWidget.setTabOrder(self.tests_search, self.tests_filter)
+        QWidget.setTabOrder(self.tests_filter, self.tests_table)
+        QWidget.setTabOrder(self.tests_table, self.key_button)
+        QWidget.setTabOrder(self.key_button, self.sheet_button)
+        QWidget.setTabOrder(self.sheet_button, self.scan_button)
+        QWidget.setTabOrder(self.scan_button, self.export_config_button)
+        QWidget.setTabOrder(self.export_config_button, self.delete_test_button)
         return page
 
     def _tests_table_clicked(self, row: int, _column: int):
@@ -727,7 +853,17 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "tests_table"):
             return
         tokens = self.tests_search.text().strip().casefold().split() if hasattr(self, "tests_search") else []
-        rows = [row for row in self._tests_rows if not tokens or all(tok in row["haystack"] for tok in tokens)]
+        status_mode = (self.tests_filter.currentData() or "all") if hasattr(self, "tests_filter") else "all"
+        rows = []
+        for row in self._tests_rows:
+            key_status = str(row["values"][5]).strip()
+            if status_mode == "complete" and key_status != "Complete":
+                continue
+            if status_mode == "incomplete" and key_status == "Complete":
+                continue
+            if tokens and not all(tok in row["haystack"] for tok in tokens):
+                continue
+            rows.append(row)
         current_id = self.test_combo.itemData(self.test_combo.currentIndex())
         self.tests_table.setUpdatesEnabled(False)
         self.tests_table.blockSignals(True)
@@ -742,9 +878,10 @@ class MainWindow(QMainWindow):
             self.tests_table.blockSignals(False)
             self.tests_table.setUpdatesEnabled(True)
         total = len(self._tests_rows)
+        is_filtered = bool(tokens or status_mode != "all")
         if hasattr(self, "tests_hint"):
             self.tests_hint.setText(
-                (f"{len(rows)} of {total} shown" if tokens else f"{total} test{'s' if total != 1 else ''}") if total else "")
+                (f"{len(rows)} of {total} shown" if is_filtered else f"{total} test{'s' if total != 1 else ''}") if total else "")
 
     def select_test(self, index: int):
         test_id = self.test_combo.itemData(index) if index >= 0 else None
@@ -912,6 +1049,8 @@ class MainWindow(QMainWindow):
             alert(self, "The answer key could not be saved", str(exc), "bad")
             return False
 
+    edit_answer_key = edit_keys
+
     def delete_test(self):
         if self.active_test_id is None or not self.config:
             alert(self, "No test selected", "Select the test you want to delete first.")
@@ -968,32 +1107,42 @@ class MainWindow(QMainWindow):
                 self.edit_keys()
             return
         try:
-            path, _ = QFileDialog.getSaveFileName(self, "Save printable answer sheet", "answer-sheets.pdf", "PDF (*.pdf)")
+            slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(self.config.get("test", {}).get("title") or "")).strip("-")
+            suggested = f"{slug}-answer-sheets.pdf" if slug else "answer-sheets.pdf"
+            path, _ = QFileDialog.getSaveFileName(self, "Save printable answer sheet", suggested, "PDF (*.pdf)")
             if path:
+                if Path(path).suffix.lower() != ".pdf":
+                    path += ".pdf"
                 institute, logo = self.sheet_branding()
-                generate_sheet_pdf(self.config, path, institute=institute, logo=logo)
+                saved = generate_sheet_pdf(self.config, path, institute=institute, logo=logo)
                 self.repo.set_setting(f"sheet_pdf_made_{self.active_test_id}", "1")
                 self.refresh_dashboard()
                 if confirm(self, "Answer sheet PDF saved",
-                           f"<b>{Path(path).name}</b> is ready.\n\nPrint at <b>100% scale</b> (turn off “fit to page”) and "
+                           f"<b>{saved.name}</b> is ready.\n\nPrint at <b>100% scale</b> (turn off “fit to page”) and "
                            f"keep the four corner squares on the paper.", "Open PDF", "Close"):
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved.resolve())))
         except Exception as exc:
             alert(self, "The sheet could not be created", str(exc), "bad")
 
     # ------------------------------------------------------------ students
     def _build_students_page(self) -> QWidget:
-        more = button("More", None, "", "more")
+        more = button("More", None, "", "more", "Download an example roster or export the current roster as JSON")
+        more.setAccessibleName("More roster actions")
         menu = QMenu(more)
         menu.addAction(icon("download", theme.TEXT_2, 16), "Download example roster", self.download_roster_template)
         menu.addAction(icon("file-export", theme.TEXT_2, 16), "Export roster as JSON", self.export_students_json)
         more.setMenu(menu)
+        classes_btn = button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
+                             "View, add, edit, or remove classes and subjects")
+        classes_btn.setAccessibleName("Manage classes and subjects")
+        import_btn = button("Import roster", self.import_students, "", "upload",
+                            "Import a CSV, Excel, or JSON roster (Ctrl+O)")
+        import_btn.setAccessibleName("Import roster")
+        add_btn = button("Add student", self.add_student, "primary", "user-plus",
+                         "Add a single student to the roster")
+        add_btn.setAccessibleName("Add student")
         page, layout = _page("Students", "The roster links roll numbers on the sheets to student names. It is optional but recommended.",
-                             (more,
-                              button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
-                                     "View, add, edit, or remove classes and subjects"),
-                              button("Import roster", self.import_students, "", "upload", "Import a CSV, Excel, or JSON roster"),
-                              button("Add student", self.add_student, "primary", "user-plus")))
+                             (more, classes_btn, import_btn, add_btn))
         bar = QHBoxLayout()
         bar.setSpacing(10)
         self.student_search = QLineEdit()
@@ -1004,19 +1153,27 @@ class MainWindow(QMainWindow):
         self.student_search.textChanged.connect(self.refresh_students)
         self.student_search.setMaximumWidth(360)
         self.student_search.setAccessibleName("Search students")
+        self.student_search.setAccessibleDescription("Filter the student roster by roll number, name, or class")
+        self.student_search.setToolTip("Search students by roll number, name, or class (Ctrl+F)")
         bar.addWidget(self.student_search, 1)
         self.student_class_filter = combo(170)
         self.student_class_filter.addItem("All classes", "")
         self.student_class_filter.setAccessibleName("Filter students by class")
+        self.student_class_filter.setAccessibleDescription("Show students from all classes or a selected class")
+        self.student_class_filter.setToolTip("Filter students by class")
         self.student_class_filter.currentIndexChanged.connect(self.refresh_students)
         bar.addWidget(self.student_class_filter)
         self.students_hint = label("", "hint", wrap=False)
         bar.addWidget(self.students_hint)
         bar.addStretch(1)
-        self.edit_student_button = button("Edit selected", self._edit_selected_student, "", "edit", "Edit the selected student")
+        self.edit_student_button = button("Edit selected", self._edit_selected_student, "", "edit",
+                                          "Edit the selected student (or double-click / press Enter on a row)")
+        self.edit_student_button.setAccessibleName("Edit selected student")
         self.edit_student_button.setEnabled(False)
         bar.addWidget(self.edit_student_button)
-        self.delete_students_button = button("Delete selected", self.delete_students, "danger", "trash")
+        self.delete_students_button = button("Delete selected", self.delete_students, "danger", "trash",
+                                             "Remove the selected student(s) from the roster (Delete)")
+        self.delete_students_button.setAccessibleName("Delete selected students")
         self.delete_students_button.setEnabled(False)
         bar.addWidget(self.delete_students_button)
         layout.addLayout(bar)
@@ -1024,21 +1181,30 @@ class MainWindow(QMainWindow):
         self.students_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.students_table.setColumnWidth(0, 160)
         self.students_table.cellDoubleClicked.connect(self.edit_student)
+        self.students_table.activated.connect(lambda idx: self.edit_student(idx.row(), idx.column()))
         self.students_table.itemSelectionChanged.connect(self._sync_student_actions)
         self.students_table.setAccessibleName("Student roster")
-        self.students_table.setToolTip("Select a student and click Edit selected, or double-click a row")
+        self.students_table.setAccessibleDescription("Student roster with roll number, name, and class. Double-click or press Enter to edit a row, or press Delete to remove selected students.")
+        self.students_table.setToolTip("Select a student and click Edit selected, or double-click / press Enter on a row")
+        del_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.students_table)
+        del_shortcut.setContext(Qt.WidgetShortcut)
+        del_shortcut.activated.connect(self.delete_students)
         self.students_empty = EmptyState("students", "No students yet",
                                          "Import a class list from Excel or CSV with the columns roll_number, name and "
                                          "class_name, or add students one at a time.",
-                                         (button("Import roster", self.import_students, "primary", "upload"),
-                                          button("Add student", self.add_student, "", "user-plus"),
-                                          button("Download example", self.download_roster_template, "ghost", "download")))
+                                         (button("Import roster", self.import_students, "primary", "upload", "Import a CSV, Excel, or JSON roster"),
+                                          button("Add student", self.add_student, "", "user-plus", "Add a single student"),
+                                          button("Download example", self.download_roster_template, "ghost", "download", "Save an example CSV or JSON roster file")))
         empty_card, el = card((0, 0, 0, 0), 0)
         el.addWidget(self.students_empty)
         self.students_stack = QStackedWidget()
         self.students_stack.addWidget(self.students_table)
         self.students_stack.addWidget(empty_card)
         layout.addWidget(self.students_stack, 1)
+        QWidget.setTabOrder(self.student_search, self.student_class_filter)
+        QWidget.setTabOrder(self.student_class_filter, self.students_table)
+        QWidget.setTabOrder(self.students_table, self.edit_student_button)
+        QWidget.setTabOrder(self.edit_student_button, self.delete_students_button)
         return page
 
     def _sync_student_actions(self):
@@ -1204,6 +1370,9 @@ class MainWindow(QMainWindow):
 
         # -- stage 1: collect files
         self.drop_zone = DropZone()
+        self.drop_zone.setAccessibleName("Drop scanned sheets here")
+        self.drop_zone.setAccessibleDescription("Drag and drop scan files or folders here, or use Add files and Add a folder buttons")
+        self.drop_zone.setToolTip("Drop PNG, JPG, TIFF, BMP, or multi-page PDF scan files or folders here")
         self.drop_zone.dropped.connect(self.add_scan_paths)
         dz = self.drop_zone.layout_
         dz.addWidget(icon_tile("upload", "info", 48), 0, Qt.AlignHCenter)
@@ -1216,8 +1385,10 @@ class MainWindow(QMainWindow):
         pick = QHBoxLayout()
         pick.setSpacing(10)
         pick.addStretch(1)
-        self.upload_button = button("Add files", self.scan_images, "primary", "plus", "Choose one or many scan files")
+        self.upload_button = button("Add files", self.scan_images, "primary", "plus", "Choose one or many scan files (Ctrl+O)")
+        self.upload_button.setAccessibleName("Add scan files")
         self.folder_button = button("Add a folder", self.choose_scan_folder, "", "folder", "Add every scan inside a folder")
+        self.folder_button.setAccessibleName("Add scan folder")
         pick.addWidget(self.upload_button)
         pick.addWidget(self.folder_button)
         pick.addStretch(1)
@@ -1231,7 +1402,9 @@ class MainWindow(QMainWindow):
         queue_head.setContentsMargins(18, 0, 18, 0)
         queue_head.addWidget(self.queue_title)
         queue_head.addStretch(1)
-        queue_head.addWidget(button("Clear all", self.clear_staged_scans, "ghost", "x"))
+        clear_queue_btn = button("Clear all", self.clear_staged_scans, "ghost", "x", "Remove all files from the upload queue")
+        clear_queue_btn.setAccessibleName("Clear upload queue")
+        queue_head.addWidget(clear_queue_btn)
         qc.addLayout(queue_head)
         self.staged_table = table(["File", "Folder", "Pages", "Size", ""], 1)
         self.staged_table.setFrameShape(QFrame.NoFrame)
@@ -1240,13 +1413,17 @@ class MainWindow(QMainWindow):
         self.staged_table.setMinimumHeight(150)
         self.staged_table.setMaximumHeight(260)
         self.staged_table.setAccessibleName("Files waiting to be read")
+        self.staged_table.setAccessibleDescription("Queued scan files showing file name, folder, page count, and file size")
+        self.staged_table.setToolTip("Files queued for reading. Click X on a row to remove it.")
         qc.addWidget(self.staged_table)
         queue_foot = QHBoxLayout()
         queue_foot.setContentsMargins(18, 0, 18, 0)
         self.staged_summary = label("", "hint", wrap=False)
         queue_foot.addWidget(self.staged_summary)
         queue_foot.addStretch(1)
-        self.start_scan_button = button("Start reading", self.start_scan, "primary", "scan")
+        self.start_scan_button = button("Start reading", self.start_scan, "primary", "scan",
+                                        "Start reading and scoring all queued scan pages")
+        self.start_scan_button.setAccessibleName("Start reading queued scans")
         queue_foot.addWidget(self.start_scan_button)
         qc.addLayout(queue_foot)
         left.addWidget(self.queue_card)
@@ -1257,6 +1434,8 @@ class MainWindow(QMainWindow):
         self.progress_detail = label("", "muted")
         self.scan_progress = QProgressBar()
         self.scan_progress.setTextVisible(False)
+        self.scan_progress.setAccessibleName("Scan batch reading progress")
+        self.scan_progress.setToolTip("Progress of reading and scoring the current scan batch")
         pc.addWidget(self.progress_title)
         pc.addWidget(self.scan_progress)
         pc.addWidget(self.progress_detail)
@@ -1277,7 +1456,8 @@ class MainWindow(QMainWindow):
         pc.addLayout(counters)
         cancel_row = QHBoxLayout()
         cancel_row.addWidget(label("You can keep this window open; sheets are saved as they are read.", "hint"), 1)
-        self.cancel_scan_button = button("Stop", self.cancel_scan, "danger", "x")
+        self.cancel_scan_button = button("Stop", self.cancel_scan, "danger", "x", "Stop reading after the current page finishes")
+        self.cancel_scan_button.setAccessibleName("Stop scan")
         cancel_row.addWidget(self.cancel_scan_button)
         pc.addLayout(cancel_row)
         self.progress_card.hide()
@@ -1291,19 +1471,26 @@ class MainWindow(QMainWindow):
         oc.addWidget(self.scan_status)
         outcome_actions = QHBoxLayout()
         outcome_actions.setSpacing(10)
-        self.outcome_primary = button("Review sheets", lambda: self.show_page("review"), "primary", "review")
+        self.outcome_primary = button("Review sheets", lambda: self.show_page("review"), "primary", "review",
+                                      "Proceed to review flagged sheets or inspect results")
+        self.outcome_primary.setAccessibleName("Continue after scan")
         outcome_actions.addWidget(self.outcome_primary)
-        self.log_button = button("View batch log", self.view_batch_log, "", "list")
+        self.log_button = button("View batch log", self.view_batch_log, "", "list",
+                                 "Inspect page-by-page processing events and errors for this batch")
+        self.log_button.setAccessibleName("View batch log")
         self.log_button.setEnabled(False)
         outcome_actions.addWidget(self.log_button)
         outcome_actions.addStretch(1)
-        outcome_actions.addWidget(button("Scan more sheets", self._reset_scan_stage, "ghost", "plus"))
+        scan_more_btn = button("Scan more sheets", self._reset_scan_stage, "ghost", "plus",
+                               "Return to the upload queue to scan additional sheets")
+        scan_more_btn.setAccessibleName("Scan more sheets")
+        outcome_actions.addWidget(scan_more_btn)
         oc.addLayout(outcome_actions)
         self.outcome_card.hide()
         left.addWidget(self.outcome_card)
 
         history, hl = card((1, 14, 1, 6), 10)
-        history_head = self._card_header("Batches for this test", "Double-click to open")
+        history_head = self._card_header("Batches for this test", "Double-click or press Enter to open")
         hl.addLayout(history_head)
         self.batch_label = label("No batch open", "hint", wrap=False)
         self.batch_history = table(["Batch", "Scanned", "Sheets", "Pages", "Status"], 1)
@@ -1311,7 +1498,10 @@ class MainWindow(QMainWindow):
         self.batch_history.setMinimumHeight(150)
         self.batch_history.setItemDelegateForColumn(4, PillDelegate(_batch_tone, self.batch_history))
         self.batch_history.cellDoubleClicked.connect(self._open_history_batch)
+        self.batch_history.activated.connect(lambda idx: self._open_history_batch(idx.row(), idx.column()))
         self.batch_history.setAccessibleName("Earlier batches for this test")
+        self.batch_history.setAccessibleDescription("Earlier scan batches for the active test. Double-click or press Enter on a row to open it.")
+        self.batch_history.setToolTip("Double-click or press Enter on an earlier batch to open it")
         self.history_empty = label("No batches yet for this test.", "hint")
         self.history_empty.setAlignment(Qt.AlignCenter)
         self.history_empty.setContentsMargins(0, 18, 0, 26)
@@ -1343,7 +1533,10 @@ class MainWindow(QMainWindow):
         rl.addWidget(label("Reader settings", "cardTitle"))
         self.reader_summary = label("", "muted")
         rl.addWidget(self.reader_summary)
-        rl.addWidget(button("Change in Settings", lambda: self.show_page("settings"), "link"))
+        change_settings_btn = button("Change in Settings", lambda: self.show_page("settings"), "link",
+                                     tip="Open Settings to adjust PDF rendering DPI or colour mode")
+        change_settings_btn.setAccessibleName("Change reader settings")
+        rl.addWidget(change_settings_btn)
         right.addWidget(reader)
         right.addStretch(1)
         columns.addLayout(right, 2)
@@ -1613,10 +1806,15 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ results
     def _build_results_page(self) -> QWidget:
-        self.export_main_button = button("Export results", self.open_exports, "primary", "download")
+        open_batch_btn = button("Open batch", self.load_saved_batch, "", "layers",
+                                "Switch to another saved scan batch (Ctrl+O)")
+        open_batch_btn.setAccessibleName("Open saved batch")
+        self.export_main_button = button("Export results", self.open_exports, "primary", "download",
+                                         "Export official results, item analysis, and reports (Ctrl+E)")
+        self.export_main_button.setAccessibleName("Export results")
         self.export_more_button = self.export_main_button
         page, layout = _page("Results", "Scores for the open batch. Export once every flagged sheet has been reviewed.",
-                             (button("Open batch", self.load_saved_batch, "", "layers"), self.export_main_button))
+                             (open_batch_btn, self.export_main_button))
         self.results_summary = Banner("Scan sheets or open a batch to see results here.", "info")
         layout.addWidget(self.results_summary)
 
@@ -1634,6 +1832,7 @@ class MainWindow(QMainWindow):
         for idx, (key, caption, icon_name) in enumerate(stat_defs):
             tile = StatTile(caption, icon_name)
             tile.set_value("–")
+            tile.setToolTip(f"{caption} for the open batch")
             self.result_stats[key] = tile
             stats.addWidget(tile, idx // 4, idx % 4)
         layout.addLayout(stats)
@@ -1646,6 +1845,8 @@ class MainWindow(QMainWindow):
         self.subject_summary_table.setMinimumHeight(108)
         self.subject_summary_table.setMaximumHeight(220)
         self.subject_summary_table.setAccessibleName("Subject-wise class results")
+        self.subject_summary_table.setAccessibleDescription("Class performance broken down by subject with question count, max marks, average, average percentage, highest, and lowest scores")
+        self.subject_summary_table.setToolTip("Class performance summary broken down by subject")
         sbl.addWidget(self.subject_summary_table)
         layout.addWidget(subject_card)
 
@@ -1656,6 +1857,7 @@ class MainWindow(QMainWindow):
         self.histogram_hint = label("Number of students in each score range. The dashed line is the class average.", "hint")
         dl.addWidget(self.histogram_hint)
         self.histogram = Histogram()
+        self.histogram.setToolTip("Score distribution across the class. Hover over a bar to see exact counts.")
         dl.addWidget(self.histogram, 1)
         self.quality_label = label("", "hint")
         dl.addWidget(self.quality_label)
@@ -1672,6 +1874,8 @@ class MainWindow(QMainWindow):
         self.hardest_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.hardest_table.setMinimumHeight(200)
         self.hardest_table.setAccessibleName("Question analysis, hardest first")
+        self.hardest_table.setAccessibleDescription("Question item analysis sorted from hardest to easiest, showing difficulty, discrimination index, and top distractor")
+        self.hardest_table.setToolTip("Questions ordered hardest first with % correct, discrimination index, and most common wrong option")
         hl.addWidget(self.hardest_table, 1)
         charts.addWidget(hardest, 2)
         layout.addLayout(charts)
@@ -1692,18 +1896,24 @@ class MainWindow(QMainWindow):
         self.results_search.setMinimumWidth(180)
         self.results_search.setMaximumWidth(340)
         self.results_search.setAccessibleName("Search student results")
+        self.results_search.setAccessibleDescription("Filter ranked students by roll number, name, class, or paper set")
+        self.results_search.setToolTip("Search student results by roll number, name, class, or set (Ctrl+F)")
         self.results_search.textChanged.connect(self._apply_results_filter)
         controls.addWidget(self.results_search, 1)
 
         controls.addWidget(label("Sort", "hint", wrap=False))
         self.results_sort = combo(170)
         self.results_sort.setAccessibleName("Sort student results")
+        self.results_sort.setAccessibleDescription("Sort student results by highest marks, lowest marks, roll number, name, or subject")
+        self.results_sort.setToolTip("Change how the student ranking table is sorted")
         self.results_sort.currentIndexChanged.connect(self._apply_results_filter)
         controls.addWidget(self.results_sort)
 
         controls.addWidget(label("Filter", "hint", wrap=False))
         self.results_filter = combo(150)
         self.results_filter.setAccessibleName("Filter student results")
+        self.results_filter.setAccessibleDescription("Filter student results by all, passed, failed, ready, or needs review")
+        self.results_filter.setToolTip("Filter students by pass/fail or review status")
         for title, key in (("All students", "all"), ("Passed (≥40%)", "passed"), ("Failed (<40%)", "failed"),
                            ("Ready", "ready"), ("Needs review", "review")):
             self.results_filter.addItem(title, key)
@@ -1722,6 +1932,8 @@ class MainWindow(QMainWindow):
         self._performance_status_delegate = PillDelegate(lambda text: "good" if text == "Ready" else "warn", self.performance_table)
         self.performance_table.setItemDelegateForColumn(11, self._performance_status_delegate)
         self.performance_table.setAccessibleName("Ranked student performance")
+        self.performance_table.setAccessibleDescription("Ranked student performance table. Select a row to inspect individual question answers below.")
+        self.performance_table.setToolTip("Select a student row to inspect subject breakdown and question-by-question answers below")
         self.performance_table.cellClicked.connect(lambda row, _c: self._on_performance_selection_changed(row))
         self.performance_table.currentCellChanged.connect(lambda row, _c, _pr, _pc: self._on_performance_selection_changed(row))
         self.performance_table.itemSelectionChanged.connect(self._on_performance_selection_changed)
@@ -1744,9 +1956,20 @@ class MainWindow(QMainWindow):
         head_row.addLayout(head, 1)
         self.question_subject_filter = combo(190)
         self.question_subject_filter.setAccessibleName("Filter student answers by subject")
+        self.question_subject_filter.setAccessibleDescription("Show all questions or only questions from a selected subject")
+        self.question_subject_filter.setToolTip("Filter this student's answers by subject")
         self.question_subject_filter.currentIndexChanged.connect(self._refresh_student_question_table)
         self.question_subject_filter.hide()
         head_row.addWidget(self.question_subject_filter, 0, Qt.AlignTop)
+        self.question_outcome_filter = combo(150)
+        self.question_outcome_filter.setAccessibleName("Filter student answers by outcome")
+        self.question_outcome_filter.setAccessibleDescription("Filter the selected student's questions by outcome: all, correct, wrong, or blank")
+        self.question_outcome_filter.setToolTip("Filter this student's responses by outcome")
+        for title, key in (("All outcomes", ""), ("Correct only", "correct"), ("Wrong only", "incorrect"), ("Blank only", "blank")):
+            self.question_outcome_filter.addItem(title, key)
+        self.question_outcome_filter.currentIndexChanged.connect(self._refresh_student_question_table)
+        self.question_outcome_filter.hide()
+        head_row.addWidget(self.question_outcome_filter, 0, Qt.AlignTop)
         sl.addLayout(head_row)
 
         self.question_performance_table = table(["Question", "Subject / topic", "Response", "Answer key", "Outcome", "Points"], 1)
@@ -1755,12 +1978,20 @@ class MainWindow(QMainWindow):
         self.question_performance_table.setMinimumHeight(180)
         self.question_performance_table.setItemDelegateForColumn(4, PillDelegate(_outcome_tone, self.question_performance_table))
         self.question_performance_table.setAccessibleName("Selected student's question by question results")
+        self.question_performance_table.setAccessibleDescription("Question-by-question responses, expected answer key, outcome, and points for the selected student")
+        self.question_performance_table.setToolTip("Question-by-question responses and points for the selected student")
         sl.addWidget(self.question_performance_table, 1)
         split.addWidget(detail)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
         split.setMinimumHeight(540)
         layout.addWidget(split, 1)
+        QWidget.setTabOrder(self.results_search, self.results_sort)
+        QWidget.setTabOrder(self.results_sort, self.results_filter)
+        QWidget.setTabOrder(self.results_filter, self.performance_table)
+        QWidget.setTabOrder(self.performance_table, self.question_subject_filter)
+        QWidget.setTabOrder(self.question_subject_filter, self.question_outcome_filter)
+        QWidget.setTabOrder(self.question_outcome_filter, self.question_performance_table)
         return _scrollable(page)
 
     @staticmethod
@@ -1845,6 +2076,10 @@ class MainWindow(QMainWindow):
                 if self.results_sort.count():
                     self.results_sort.setCurrentIndex(0)
                 self.results_sort.blockSignals(False)
+            if hasattr(self, "question_outcome_filter"):
+                self.question_outcome_filter.blockSignals(True)
+                self.question_outcome_filter.setCurrentIndex(0)
+                self.question_outcome_filter.blockSignals(False)
 
         records = self.result_records
         has_results = bool(records) and bool(self.config)
@@ -1870,6 +2105,7 @@ class MainWindow(QMainWindow):
             self.student_subject_summary.setText("")
             self.student_subject_summary.hide()
             self.question_subject_filter.hide()
+            self.question_outcome_filter.hide()
             self.results_summary.set("No results yet for this test. Scan sheets to see scores here.", "info")
             self.results_summary.set_action("Scan sheets", lambda: self.show_page("scan"))
             return
@@ -2004,6 +2240,7 @@ class MainWindow(QMainWindow):
         self._all_result_rows = computed_rows
         self._populate_sort_options(subjects)
         self._populate_question_subject_filter(subjects)
+        self.question_outcome_filter.show()
         self._rendered_student_detail_key = None
         self._apply_results_filter()
 
@@ -2143,7 +2380,8 @@ class MainWindow(QMainWindow):
         record = rows[row]
         key = self._result_row_key(record)
         subject_filter = self.question_subject_filter.currentData() or ""
-        render_key = (key, subject_filter)
+        outcome_filter = (self.question_outcome_filter.currentData() or "") if hasattr(self, "question_outcome_filter") else ""
+        render_key = (key, subject_filter, outcome_filter)
         if not force and render_key == self._rendered_student_detail_key:
             return
         self._selected_result_key = key
@@ -2180,6 +2418,8 @@ class MainWindow(QMainWindow):
             section_label = q_subject.get(str(question["question"])) or str(meta.get("section", ""))
             if subject_filter and section_label != subject_filter:
                 continue
+            if outcome_filter and str(question.get("status", "")).lower() != outcome_filter:
+                continue
             visible_questions.append((question, meta, section_label))
 
         self.question_performance_table.setUpdatesEnabled(False)
@@ -2208,7 +2448,8 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         try:
-            written = export_all(self.config, self.result_records, folder, value)
+            _institute, logo = self.sheet_branding()
+            written = export_all(self.config, self.result_records, folder, value, logo=logo)
         except Exception as exc:
             alert(self, "Export failed", str(exc), "bad")
             return
@@ -2249,9 +2490,14 @@ class MainWindow(QMainWindow):
         if Path(path).suffix.lower() != extension:
             path += extension
         try:
-            export_function(kind)(self.config, self.result_records, path)
-            if confirm(self, "Export complete", f"Saved <b>{Path(path).name}</b>.", "Open file", "Close"):
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            exporter = export_function(kind)
+            if kind in PDF_EXPORT_KINDS:
+                _institute, logo = self.sheet_branding()
+                saved = exporter(self.config, self.result_records, path, logo=logo)
+            else:
+                saved = exporter(self.config, self.result_records, path)
+            if confirm(self, "Export complete", f"Saved <b>{saved.name}</b>.", "Open file", "Close"):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved.resolve())))
         except Exception as exc:
             alert(self, "Export failed", str(exc), "bad")
 
@@ -2280,8 +2526,14 @@ class MainWindow(QMainWindow):
         self.scan_dpi_setting.setRange(150, 600)
         self.scan_dpi_setting.setSuffix(" DPI")
         self.scan_dpi_setting.setValue(int(self.repo.get_setting("scan_dpi", "216")))
+        self.scan_dpi_setting.setAccessibleName("PDF rendering quality in DPI")
+        self.scan_dpi_setting.setAccessibleDescription("Resolution in dots per inch used when rendering PDF scan pages")
+        self.scan_dpi_setting.setToolTip("Resolution used when converting PDF scan pages to images (150–600 DPI)")
         self.scan_color_setting = Segmented([("grayscale", "Grayscale"), ("color", "Colour")])
         self.scan_color_setting.set_current(self.repo.get_setting("scan_color_mode", "grayscale"))
+        self.scan_color_setting.setAccessibleName("Scan colour mode")
+        self.scan_color_setting.setAccessibleDescription("Choose whether scans are read in grayscale or colour")
+        self.scan_color_setting.setToolTip("Convert scans to grayscale (recommended) or keep full colour")
         scan_form = form()
         scan_form.addRow("PDF rendering quality", self.scan_dpi_setting)
         scan_form.addRow("Scan colour mode", self.scan_color_setting)
@@ -2299,6 +2551,8 @@ class MainWindow(QMainWindow):
             box.setRange(-1000, 1000)
             box.setDecimals(2)
             box.setValue(float(self.repo.get_setting(key, default)))
+            box.setAccessibleName(caption)
+            box.setToolTip(f"Default {caption.lower()} when creating new tests")
             mark_form.addRow(caption, box)
         ml.addLayout(mark_form)
         layout.addWidget(marking)
@@ -2309,16 +2563,23 @@ class MainWindow(QMainWindow):
 
         references, ref_layout = section("Classes and subjects", "Manage reusable names for student records and tests. A test can use more than one subject.")
         ref_row = QHBoxLayout()
-        ref_row.addWidget(button("Manage classes and subjects", self.manage_reference_data, "ghost", "settings"))
+        manage_ref_btn = button("Manage classes and subjects", self.manage_reference_data, "ghost", "settings",
+                                "View, add, rename, or remove reusable classes and subjects")
+        manage_ref_btn.setAccessibleName("Manage classes and subjects")
+        ref_row.addWidget(manage_ref_btn)
         ref_row.addStretch(1)
         ref_layout.addLayout(ref_row)
         layout.addWidget(references)
 
-        brand_card, bl = section("Institute", "QualifyIAS is printed by default. Add a PNG or JPG logo to replace the built-in wordmark.")
+        brand_card, bl = section("Institute", "The QualifyIAS logo is printed by default on answer sheets and exam PDFs. Choose a PNG or JPG image to replace it.")
         self.institute_setting = QLineEdit(self.repo.get_setting("institute_name", "QualifyIAS"))
         self.institute_setting.setPlaceholderText("e.g. Greenfield Public School")
+        self.institute_setting.setClearButtonEnabled(True)
         self.institute_setting.setMaxLength(90)
         self.institute_setting.setMaximumWidth(360)
+        self.institute_setting.setAccessibleName("Institute name")
+        self.institute_setting.setAccessibleDescription("Default institute or school name printed at the top of answer sheets")
+        self.institute_setting.setToolTip("Default institute or school name printed on answer sheets")
         self.institute_setting.editingFinished.connect(lambda: self.save_settings(quiet=True))
         brand_form = form()
         brand_form.addRow("Institute name", self.institute_setting)
@@ -2329,13 +2590,19 @@ class MainWindow(QMainWindow):
         self.logo_preview.setFixedSize(84, 70)
         self.logo_preview.setAlignment(Qt.AlignCenter)
         self.logo_preview.setObjectName("inset")
+        self.logo_preview.setAccessibleName("Institute logo preview")
+        self.logo_preview.setToolTip("Preview of the active logo printed at the top of answer sheets and exam PDFs")
         logo_row.addWidget(self.logo_preview)
-        logo_row.addWidget(button("Choose logo", self.choose_logo, "", "upload"))
-        self.logo_remove_button = button("Remove", self.remove_logo, "ghost", "trash")
+        choose_logo_btn = button("Choose logo", self.choose_logo, "", "upload", "Select a PNG or JPG logo image for answer sheets and exam PDFs")
+        choose_logo_btn.setAccessibleName("Choose institute logo")
+        logo_row.addWidget(choose_logo_btn)
+        self.logo_remove_button = button("Remove", self.remove_logo, "ghost", "trash",
+                                         "Remove the custom logo and restore the default QualifyIAS logo")
+        self.logo_remove_button.setAccessibleName("Remove institute logo")
         logo_row.addWidget(self.logo_remove_button)
         logo_row.addStretch(1)
         bl.addLayout(logo_row)
-        bl.addWidget(label("Use a PNG or JPG with a plain or transparent background. It prints in black and white, about 22 x 15 mm, so wide logos work best.", "hint"))
+        bl.addWidget(label("Use a PNG or JPG with a plain or transparent background. Wide logos align best in the top-right header (about 28 x 12 mm).", "hint"))
         layout.addWidget(brand_card)
         self._refresh_logo_preview()
 
@@ -2344,9 +2611,18 @@ class MainWindow(QMainWindow):
         dl.addWidget(self.auto_backup_label)
         row = QHBoxLayout()
         row.setSpacing(10)
-        row.addWidget(button("Back up now", self.backup_data, "", "download"))
-        row.addWidget(button("Restore from backup", self.restore_data, "", "refresh"))
-        row.addWidget(button("Open data folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.db_path.parent))), "ghost", "folder"))
+        backup_btn = button("Back up now", self.backup_data, "", "download",
+                            "Save a complete backup of all tests, students, scans, and results (.omrbackup)")
+        backup_btn.setAccessibleName("Back up data now")
+        restore_btn = button("Restore from backup", self.restore_data, "", "refresh",
+                             "Restore tests, students, scans, and results from a saved .omrbackup file")
+        restore_btn.setAccessibleName("Restore data from backup")
+        open_data_btn = button("Open data folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.db_path.parent))),
+                               "ghost", "folder", "Open the local folder where OMRaut stores its database and backups")
+        open_data_btn.setAccessibleName("Open local data folder")
+        row.addWidget(backup_btn)
+        row.addWidget(restore_btn)
+        row.addWidget(open_data_btn)
         row.addStretch(1)
         dl.addLayout(row)
         layout.addWidget(data)
@@ -2354,7 +2630,9 @@ class MainWindow(QMainWindow):
         about, al = section("About", f"OMRaut version {__version__}. Works fully offline.")
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.update_button = button("Check for updates", self.check_updates, "", "refresh")
+        self.update_button = button("Check for updates", self.check_updates, "", "refresh",
+                                    "Check if a newer version of OMRaut is available")
+        self.update_button.setAccessibleName("Check for updates")
         row.addWidget(self.update_button)
         row.addWidget(self.settings_saved)
         row.addStretch(1)
@@ -2389,22 +2667,23 @@ class MainWindow(QMainWindow):
         return self.db_path.parent / "branding" / "logo.png"
 
     def sheet_branding(self) -> tuple[str, Path | None]:
-        """Institute name (test's own, else the Settings default) and the saved logo, if any."""
+        """Institute name (test's own, else Settings default) and the custom or bundled logo."""
         name = ((self.config or {}).get("test", {}).get("institute", "")
                 or self.repo.get_setting("institute_name", "QualifyIAS") or "QualifyIAS")
-        logo = self._logo_path()
-        return name, (logo if logo.is_file() else None)
+        custom = self._logo_path()
+        return name, (custom if custom.is_file() else default_logo_path())
 
     def _refresh_logo_preview(self):
-        logo = self._logo_path()
-        shown = QPixmap(str(logo)) if logo.is_file() else QPixmap()
+        custom = self._logo_path()
+        active = custom if custom.is_file() else default_logo_path()
+        shown = QPixmap(str(active)) if active is not None and active.is_file() else QPixmap()
         if shown.isNull():
             self.logo_preview.setPixmap(QPixmap())
             self.logo_preview.setText("No logo")
         else:
             self.logo_preview.setText("")
             self.logo_preview.setPixmap(shown.scaled(76, 62, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.logo_remove_button.setEnabled(logo.is_file())
+        self.logo_remove_button.setEnabled(custom.is_file())
 
     def choose_logo(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose institute logo", "", "Images (*.png *.jpg *.jpeg *.bmp)")

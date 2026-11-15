@@ -27,6 +27,13 @@ class ScanProgress:
     needs_review: int = 0
     errors: int = 0
     current_file: str = ""
+    current_page: int = 0
+    file_index: int = 0
+    file_count: int = 0
+
+    @property
+    def percent(self) -> float:
+        return round(self.processed / self.total * 100, 1) if self.total > 0 else 0.0
 
 
 @dataclass
@@ -47,6 +54,7 @@ def _flag_summary(flags: list[dict[str, Any]]) -> str:
         f"{(' ' + str(flag['group'])) if flag.get('group') else ''}"
         f"{(' Q' + str(flag['question'])) if flag.get('question') else ''}"
         f"{(': ' + ', '.join(map(str, flag['values']))) if flag.get('values') else ''}"
+        f"{(' (' + str(flag['message']) + ')') if flag.get('message') else ''}"
         for flag in flags if flag.get("kind") != "blank"
     ) or "manual review required"
 
@@ -94,6 +102,7 @@ def process_scan_batch(repo: Repository, db_path: Path, test_id: int, config: di
             outcome.errors.append(f"{Path(file).name}: {message}")
             repo.log_batch_event(batch_id, "ERROR", message, Path(file).name)
     progress.total = sum(count for _, count in managed_pages)
+    progress.file_count = len(managed_pages)
     progress.errors = len(outcome.errors)
     if not progress.total:
         repo.finish_batch(batch_id, 0, error_count=max(1, len(outcome.errors)))
@@ -105,16 +114,21 @@ def process_scan_batch(repo: Repository, db_path: Path, test_id: int, config: di
     report()
     processed = 0
     cancelled = False
-    for file, _count in managed_pages:
-        progress.current_file = Path(file).name.split("-", 1)[-1]
+    for file_idx, (file, _count) in enumerate(managed_pages, 1):
+        display_name = Path(file).name.split("-", 1)[-1]
+        progress.file_index = file_idx
+        progress.current_file = display_name
+        progress.current_page = 0
+        report()
         try:
-            for page_label, image_data in scan_pages(file, dpi=scan_dpi, color_mode=color_mode):
+            for page_idx, (page_label, image_data) in enumerate(scan_pages(file, dpi=scan_dpi, color_mode=color_mode), 1):
                 if is_cancelled is not None and is_cancelled():
                     cancelled = True
                     break
+                progress.current_page = page_idx
                 result = read_image(image_data, config)
                 if result.requires_review:
-                    repo.log_batch_event(batch_id, "WARNING", f"Reader flags: {_flag_summary(result.flags)}", Path(file).name)
+                    repo.log_batch_event(batch_id, "WARNING", f"Reader flags: {_flag_summary(result.flags)}", display_name)
                 result.thresholds["color_mode"] = color_mode
                 if Path(file).suffix.lower() == ".pdf":
                     result.thresholds["pdf_render_dpi"] = float(scan_dpi)
@@ -142,8 +156,8 @@ def process_scan_batch(repo: Repository, db_path: Path, test_id: int, config: di
             if cancelled:
                 break
         except Exception as exc:
-            outcome.errors.append(f"{Path(file).name}: {exc}")
-            repo.log_batch_event(batch_id, "ERROR", str(exc), Path(file).name)
+            outcome.errors.append(f"{display_name}: {exc}")
+            repo.log_batch_event(batch_id, "ERROR", str(exc), display_name)
             progress.errors = len(outcome.errors)
             report()
 
