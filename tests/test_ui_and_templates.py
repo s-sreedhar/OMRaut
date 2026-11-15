@@ -636,3 +636,171 @@ def test_subject_cell_dropdown_opens_immediately_and_never_changes_value_unless_
     delegate.setModelData(editor, table.model(), index)
     assert table.item(0, 0).text() == "Chemistry"
     editor.deleteLater()
+
+
+def test_results_selection_search_sort_filter_and_subject_breakdown(tmp_path):
+    from types import SimpleNamespace
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app, window = _window(tmp_path)
+    window.resize(1366, 768)
+    config = build_from_template(TEMPLATES[0], title="Midterm", class_name="10A", subjects=["Physics", "Chemistry"])
+    qids = [str(q["id"]) for q in config["questions"]]
+    config["sets"]["A"]["answer_key"] = {qid: "A" for qid in qids}
+    test_id = window.repo.save_test(config)
+    window.refresh_tests(test_id)
+    batch_id = window.repo.create_batch(test_id, str(tmp_path), expected_pages=3)
+    window.repo.save_student("002", "Asha", "10A")
+    window.repo.save_student("010", "Bala", "10A")
+    window.repo.save_student("003", "Chitra", "10B")
+
+    # 10 questions: Q1-Q5 Physics, Q6-Q10 Chemistry (1 pt each -> max 5 per subject, 10 total)
+    # Asha (002): 5 Physics + 2 Chemistry = 7 (70%, Ready)
+    # Bala (010): 1 Physics + 5 Chemistry = 6 (60%, Ready) -> highest in Chemistry
+    # Chitra (003): 1 Physics + 0 Chemistry = 1 (10%, Needs review)
+    r_asha = SimpleNamespace(roll_number="002", set_code="A",
+                             answers={**{str(i): "A" for i in range(1, 6)}, "6": "A", "7": "A"},
+                             requires_review=False, image_path="p1.png", preview_path="", thresholds={}, marks={}, flags=[])
+    r_bala = SimpleNamespace(roll_number="010", set_code="A",
+                             answers={"1": "A", **{str(i): "A" for i in range(6, 11)}},
+                             requires_review=False, image_path="p2.png", preview_path="", thresholds={}, marks={}, flags=[])
+    r_chitra = SimpleNamespace(roll_number="003", set_code="A",
+                               answers={"1": "A"},
+                               requires_review=True, image_path="p3.png", preview_path="", thresholds={}, marks={}, flags=[])
+    window.repo.store_read(batch_id, r_asha, {"total": 7})
+    window.repo.store_read(batch_id, r_bala, {"total": 6})
+    window.repo.store_read(batch_id, r_chitra, {"total": 1})
+    window.repo.finish_batch(batch_id, 3)
+    window.batch_id = batch_id
+    window.result_records = window.repo.results_for_batch(batch_id)
+
+    window.show()
+    window.show_page("results")
+    app.processEvents()
+
+    # Layout fits within a standard 1366x768 viewport width without overflowing to ~1765px
+    scroll = window.pages.currentWidget()
+    assert scroll.widget().width() <= scroll.viewport().width() + 2
+
+    # Subject breakdown card shows both subjects
+    assert window.subject_summary_table.rowCount() == 2
+    assert window.subject_summary_table.item(0, 0).text() == "Physics"
+    assert window.subject_summary_table.item(1, 0).text() == "Chemistry"
+
+    # Ranking table includes per-subject columns
+    headers = [window.performance_table.horizontalHeaderItem(c).text() for c in range(window.performance_table.columnCount())]
+    assert "Physics" in headers and "Chemistry" in headers
+    assert window.performance_table.rowCount() == 3
+    assert window.student_title.text() == "Asha"
+
+    # Click student row 1 (Bala) and verify selection & detail panel update
+    rect = window.performance_table.visualRect(window.performance_table.model().index(1, 2))
+    QTest.mouseClick(window.performance_table.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
+    app.processEvents()
+    assert window.performance_table.currentRow() == 1
+    assert window.student_title.text() == "Bala"
+    assert "Physics: 1/5" in window.student_subject_summary.text()
+    assert "Chemistry: 5/5" in window.student_subject_summary.text()
+    assert window.question_performance_table.rowCount() == 10
+
+    # Filter student answers by subject
+    window.question_subject_filter.setCurrentIndex(window.question_subject_filter.findData("Chemistry"))
+    app.processEvents()
+    assert window.question_performance_table.rowCount() == 5
+    window.question_subject_filter.setCurrentIndex(0)
+
+    # Sort by lowest marks -> Chitra first
+    window.results_sort.setCurrentIndex(window.results_sort.findData("lowest"))
+    assert window.performance_table.item(0, 2).text() == "Chitra"
+
+    # Sort by highest Chemistry -> Bala (20) before Asha (8)
+    window.results_sort.setCurrentIndex(window.results_sort.findData("subject_desc:Chemistry"))
+    assert window.performance_table.item(0, 2).text() == "Bala"
+
+    # Sort by roll number (natural order: 002, 003, 010)
+    window.results_sort.setCurrentIndex(window.results_sort.findData("roll"))
+    assert [window.performance_table.item(r, 1).text() for r in range(3)] == ["002", "003", "010"]
+
+    # Filter by Passed / Failed / Needs review
+    window.results_filter.setCurrentIndex(window.results_filter.findData("passed"))
+    assert window.performance_table.rowCount() == 2
+    window.results_filter.setCurrentIndex(window.results_filter.findData("failed"))
+    assert [window.performance_table.item(r, 2).text() for r in range(window.performance_table.rowCount())] == ["Chitra"]
+    window.results_filter.setCurrentIndex(window.results_filter.findData("review"))
+    assert window.performance_table.rowCount() == 1
+    window.results_filter.setCurrentIndex(window.results_filter.findData("all"))
+
+    # Search by roll number and non-matching query
+    window.results_search.setText("010")
+    assert window.performance_table.rowCount() == 1
+    assert window.student_title.text() == "Bala"
+    assert "1 of 3 shown" in window.results_filter_hint.text()
+
+    window.results_search.setText("no-such-roll")
+    assert window.performance_table.rowCount() == 0
+    assert window.question_performance_table.rowCount() == 0
+    assert window.student_title.text() == "No matching students"
+    window.close()
+
+
+def test_tests_search_students_edit_and_reference_dialog(tmp_path):
+    from omr_exam.dialogs import ReferenceDataDialog, StudentDialog
+
+    app, window = _window(tmp_path)
+    repo = window.repo
+    cfg1 = build_from_template(TEMPLATES[0], title="Alpha Mock Test", class_name="10A", subjects=["Physics"])
+    cfg2 = build_from_template(TEMPLATES[0], title="Beta Weekly Quiz", class_name="11B", subjects=["Chemistry"])
+    repo.save_test(cfg1)
+    repo.save_test(cfg2)
+    repo.save_student("101", "Asha Verma", "10A")
+    repo.save_student("102", "Bala Rao", "11B")
+    window.refresh_tests()
+    window.refresh_students()
+
+    window.show()
+    window.show_page("tests")
+    app.processEvents()
+
+    assert window.tests_table.rowCount() == 2
+    window.tests_search.setText("alpha phys")
+    assert window.tests_table.rowCount() == 1
+    assert window.tests_table.item(0, 0).text() == "Alpha Mock Test"
+    assert "1 of 2 shown" in window.tests_hint.text()
+    window.tests_search.clear()
+    assert window.tests_table.rowCount() == 2
+
+    # Students page: class filter, single-selection Edit button, roll number & name update
+    window.show_page("students")
+    app.processEvents()
+    assert window.students_table.rowCount() == 2
+    assert not window.edit_student_button.isEnabled()
+    window.student_class_filter.setCurrentIndex(window.student_class_filter.findData("11B"))
+    assert window.students_table.rowCount() == 1
+    assert window.students_table.item(0, 1).text() == "Bala Rao"
+    window.student_class_filter.setCurrentIndex(0)
+    window.students_table.selectRow(0)
+    app.processEvents()
+    assert window.edit_student_button.isEnabled()
+
+    dlg = StudentDialog(window, "101", "Asha Verma", "10A", editing=True, classes=["10A", "11B"])
+    assert dlg.roll.isEnabled() and not dlg.roll.isReadOnly()
+    dlg.roll.setText("201")
+    dlg.name.setText("Asha Updated")
+    dlg.class_name.setText("11B")
+    dlg._attempt()
+    window._save_student(*dlg.values(), original_roll=dlg.original_roll_number)
+    assert [s["roll_number"] for s in repo.students()] == ["102", "201"]
+    assert repo.students()[1]["name"] == "Asha Updated"
+
+    # Classes & subjects dialog: filter + inline add + rename selection
+    ref_dlg = ReferenceDataDialog(repo, window)
+    ref_dlg.quick_inputs["classes"].setText("12C")
+    ref_dlg._add_from_inline("classes")
+    assert "12C" in repo.reference_values("classes")
+    assert ref_dlg.lists["classes"].currentItem().text() == "12C"
+    ref_dlg.searches["classes"].setText("11")
+    assert ref_dlg.lists["classes"].count() == 1
+    assert ref_dlg.lists["classes"].item(0).text() == "11B"
+    ref_dlg.close()
+    window.close()

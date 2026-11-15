@@ -895,3 +895,24 @@ def test_sample_answer_key_files_import_back(tmp_path):
     assert set(payload["sets"]) == set(config["sheet"]["set_codes"])
     line = write_sample_key(config, tmp_path / "key.txt").read_text(encoding="utf-8").strip()
     assert len(line) == len(config["questions"])
+
+
+def test_save_student_roll_rename_and_precomputed_reports(tmp_path):
+    from omr_exam.reports import distractor_analysis, item_analysis, subject_summary, summary_stats
+
+    repository = Repository(tmp_path / "exam.sqlite3")
+    repository.save_student("000001", "Asha", "10A")
+    repository.save_student("000002", "Bala", "10B")
+    repository.save_student("000010", "Asha Kumari", "10A", original_roll_number="000001")
+    rolls = [s["roll_number"] for s in repository.students()]
+    assert rolls == ["000002", "000010"]
+    with pytest.raises(ValueError, match="already exists"):
+        repository.save_student("000002", "Dup", "10B", original_roll_number="000010")
+
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    records = _sample_records(config)
+    computed = class_results(config, records)
+    assert summary_stats(config, records, rows=computed) == summary_stats(config, records)
+    assert item_analysis(config, records, rows=computed) == item_analysis(config, records)
+    assert distractor_analysis(config, records, rows=computed) == distractor_analysis(config, records)
+    assert subject_summary(config, records, rows=computed) == subject_summary(config, records)

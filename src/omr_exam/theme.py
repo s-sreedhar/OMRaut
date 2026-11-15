@@ -232,13 +232,14 @@ QCheckBox:focus {{ color: {ACCENT_DARK}; }}
 
 /* ---- tables & lists ---- */
 QTableWidget, QTableView {{ background: {CARD}; alternate-background-color: #FBF9F4; border: 1.5px solid {BORDER_STRONG};
-    border-radius: 8px; gridline-color: #DFD9C9; selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT};
+    border-radius: 8px; gridline-color: #DFD9C9; selection-background-color: #CBE8E2; selection-color: {TEXT};
     outline: none; }}
 QTableWidget::item {{ padding: 6px 10px; border: none; }}
+QTableWidget::item:hover {{ background: #F1F7F5; }}
 QTableWidget#gridTable {{ gridline-color: {GRID_LINE}; border: 1.5px solid {BORDER_STRONG}; }}
-QTableWidget#gridTable::item:selected {{ background: transparent; color: {TEXT}; }}
+QTableWidget#gridTable::item:selected, QTableWidget#gridTable::item:selected:!active {{ background: transparent; color: {TEXT}; }}
 QTableWidget#gridTable:focus {{ border: 2px solid {ACCENT}; }}
-QTableWidget::item:selected {{ background: {ACCENT_SOFT}; color: {TEXT}; }}
+QTableWidget::item:selected, QTableWidget::item:selected:!active {{ background: #CBE8E2; color: {TEXT}; }}
 QTableWidget:focus {{ border: 2px solid {ACCENT}; }}
 QHeaderView {{ background: transparent; }}
 QHeaderView::section {{ background: {SUBTLE}; color: {TEXT_2}; font-size: 12px; font-weight: 700; border: none;

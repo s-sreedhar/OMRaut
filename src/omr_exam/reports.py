@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import re
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -48,15 +48,23 @@ def class_results(config: dict[str, Any], records: list[dict[str, Any]], set_cod
         row["rank"] = current_rank
     maximum = max_score(config)
     scored = [row["total"] for row in output if row.get("total") is not None]
+    total_scored = len(scored)
+    below_by_score: dict[float, int] = {}
+    score_counts: Counter[float] = Counter(scored)
+    if total_scored:
+        running_below = 0
+        for score in sorted(score_counts):
+            below_by_score[score] = running_below
+            running_below += score_counts[score]
     for row in output:
         total = row.get("total")
         if total is None:
             row["percent"], row["percentile"] = None, None
             continue
         row["percent"] = round(total / maximum * 100, 1) if maximum else None
-        below = sum(score < total for score in scored)
-        equal = sum(score == total for score in scored)
-        row["percentile"] = round((below + 0.5 * equal) / len(scored) * 100, 1)
+        below = below_by_score.get(total, 0)
+        equal = score_counts.get(total, 0)
+        row["percentile"] = round((below + 0.5 * equal) / total_scored * 100, 1) if total_scored else None
     return output
 
 
@@ -86,8 +94,10 @@ def max_score(config: dict[str, Any]) -> float:
                for q in config["questions"] if str(q["id"]) not in dropped)
 
 
-def _eligible(config: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [row for row in class_results(config, records) if not row["review_required"] and row.get("total") is not None]
+def _eligible(config: dict[str, Any], records: list[dict[str, Any]],
+              rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    base_rows = rows if rows is not None else class_results(config, records)
+    return [row for row in base_rows if not row["review_required"] and row.get("total") is not None]
 
 
 def _stats(values: list[float]) -> dict[str, float | None]:
@@ -102,35 +112,38 @@ def _stats(values: list[float]) -> dict[str, float | None]:
             "high": ordered[-1], "low": ordered[0]}
 
 
-def summary_stats(config: dict[str, Any], records: list[dict[str, Any]], pass_percent: float = 40.0) -> dict[str, Any]:
+def summary_stats(config: dict[str, Any], records: list[dict[str, Any]], pass_percent: float = 40.0,
+                  *, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Whole-test figures: spread of scores, pass rate, and KR-20 reliability of the question set."""
-    rows = _eligible(config, records)
+    eligible = _eligible(config, records, rows=rows)
     maximum = max_score(config)
-    result: dict[str, Any] = {"students": len(rows), "maximum": maximum, "pass_percent": pass_percent,
-                              **_stats([row["total"] for row in rows])}
-    result["mean_percent"] = round(result["mean"] / maximum * 100, 1) if rows and maximum else None
-    result["pass_rate"] = (round(sum((row["percent"] or 0) >= pass_percent for row in rows) / len(rows) * 100, 1)
-                           if rows else None)
+    result: dict[str, Any] = {"students": len(eligible), "maximum": maximum, "pass_percent": pass_percent,
+                              **_stats([row["total"] for row in eligible])}
+    result["mean_percent"] = round(result["mean"] / maximum * 100, 1) if eligible and maximum else None
+    result["pass_rate"] = (round(sum((row["percent"] or 0) >= pass_percent for row in eligible) / len(eligible) * 100, 1)
+                           if eligible else None)
     reliability = None
-    if len(rows) > 1:
-        counted = [i for i, q in enumerate(rows[0]["questions"]) if q["status"] != "dropped"]
+    if len(eligible) > 1:
+        counted = [i for i, q in enumerate(eligible[0]["questions"]) if q["status"] != "dropped"]
         k = len(counted)
-        totals = [sum(row["questions"][i]["status"] == "correct" for i in counted) for row in rows]
+        totals = [sum(row["questions"][i]["status"] == "correct" for i in counted) for row in eligible]
         mean = sum(totals) / len(totals)
         variance = sum((t - mean) ** 2 for t in totals) / len(totals)
         if k > 1 and variance > 0:
             pq = 0.0
             for i in counted:
-                p = sum(row["questions"][i]["status"] == "correct" for row in rows) / len(rows)
+                p = sum(row["questions"][i]["status"] == "correct" for row in eligible) / len(eligible)
                 pq += p * (1 - p)
             reliability = round(k / (k - 1) * (1 - pq / variance), 3)
     result["reliability"] = reliability
     return result
 
 
-def distractor_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def distractor_analysis(config: dict[str, Any], records: list[dict[str, Any]],
+                        *, rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """For each question, how many students chose each option, which wrong option attracted most, and blanks."""
-    rows = _eligible(config, records)
+    eligible = _eligible(config, records, rows=rows)
+    row_questions = [{q["question"]: q for q in row.get("questions", [])} for row in eligible]
     options = [str(o) for o in config["sheet"]["options"]]
     single = len(config["sheet"]["set_codes"]) == 1
     dropped = {str(q) for q in config["scoring"].get("dropped_questions", [])}
@@ -141,8 +154,8 @@ def distractor_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -
                 "top_wrong_count": 0, "dropped": str(qid) in dropped, **{f"option_{o}": 0 for o in options}}
         wrong: dict[str, int] = defaultdict(int)
         if not item["dropped"]:
-            for row in rows:
-                entry = next((q for q in row["questions"] if q["question"] == qid), None)
+            for q_map in row_questions:
+                entry = q_map.get(qid)
                 if entry is None:
                     continue
                 item["key"] = (entry.get("expected") or "") if single else "by set"
@@ -190,9 +203,10 @@ def score_bands(config: dict[str, Any], records: list[dict[str, Any]]) -> list[t
     return list(zip(labels, counts))
 
 
-def item_analysis(config: dict[str, Any], records: list[dict[str, Any]], set_code: str | None = None) -> list[dict[str, Any]]:
-    rows = class_results(config, records, set_code)
-    eligible = [row for row in rows if not row["review_required"] and row.get("total") is not None]
+def item_analysis(config: dict[str, Any], records: list[dict[str, Any]], set_code: str | None = None,
+                  *, rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    computed = rows if (rows is not None and set_code is None) else class_results(config, records, set_code)
+    eligible = [row for row in computed if not row["review_required"] and row.get("total") is not None]
     n = len(eligible)
     dropped = {str(q) for q in config["scoring"].get("dropped_questions", [])}
     if n == 0:
@@ -464,6 +478,62 @@ def subject_analysis(config: dict[str, Any], records: list[dict[str, Any]]) -> l
         output.append({"subject": subject, "question_count": question_count_by_subject[subject],
                        "student_count": len(scores),
                        "average_points_per_student": round(sum(scores.values()) / len(scores), 3) if scores else 0})
+    return output
+
+
+def subject_max_scores(config: dict[str, Any], set_code: str | None = None) -> dict[str, float]:
+    """Maximum earnable points per subject for the test or a specific set."""
+    rules = config["scoring"]
+    dropped = {str(q) for q in rules.get("dropped_questions", [])}
+    bonus = {str(q) for q in rules.get("bonus_questions", [])}
+    correct_pts = float(rules["correct"])
+    q_subject = _subject_for_question(config, set_code)
+    fallback = (config["test"].get("subjects") or ["General"])[0]
+    totals: dict[str, float] = defaultdict(float)
+    for question in config["questions"]:
+        qid = str(question["id"])
+        if qid not in dropped:
+            totals[q_subject.get(qid, fallback)] += correct_pts + (1.0 if qid in bonus else 0.0)
+    return dict(totals)
+
+
+def subject_summary(config: dict[str, Any], records: list[dict[str, Any]],
+                    *, rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Per-subject question count, maximum score, and class summary across eligible students."""
+    subjects = _all_test_subjects(config)
+    set_codes = config.get("sheet", {}).get("set_codes") or [None]
+    default_code = set_codes[0] if set_codes else None
+    q_subj_by_set = {code: _subject_for_question(config, code) for code in set_codes}
+    question_counts: dict[str, int] = defaultdict(int)
+    for subject in q_subj_by_set.get(default_code, _subject_for_question(config, default_code)).values():
+        question_counts[subject] += 1
+    maxima = subject_max_scores(config, default_code)
+    eligible = _eligible(config, records, rows=rows)
+    values_by_subject: dict[str, list[float]] = {subject: [] for subject in subjects}
+    for row in eligible:
+        scores = row.get("subject_scores")
+        if not scores:
+            set_code = row.get("set_code")
+            q_subj = q_subj_by_set.get(set_code) or _subject_for_question(config, set_code)
+            scores = _student_subject_scores(row, q_subj)
+        for subject in subjects:
+            values_by_subject[subject].append(float(scores.get(subject, 0.0)))
+    output = []
+    for subject in subjects:
+        vals = values_by_subject[subject]
+        stats = _stats(vals)
+        maximum = round(maxima.get(subject, 0.0), 2)
+        mean = stats["mean"]
+        output.append({
+            "subject": subject,
+            "questions": question_counts.get(subject, 0),
+            "maximum": maximum,
+            "students": len(vals),
+            "mean": mean,
+            "mean_percent": round(mean / maximum * 100, 1) if mean is not None and maximum > 0 else None,
+            "high": stats["high"],
+            "low": stats["low"],
+        })
     return output
 
 

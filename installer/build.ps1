@@ -58,8 +58,22 @@ if (Test-Path -LiteralPath $ExistingFeedPath -PathType Leaf) {
   if ($ExistingPackageIds.Count -gt 0 -and ($ExistingPackageIds.Count -ne 1 -or $ExistingPackageIds[0] -ne "OMRaut")) {
     throw "Output directory contains a different Velopack package ($($ExistingPackageIds -join ', ')); choose a clean output directory."
   }
-  if ($ExistingEntries | Where-Object { $_.PackageId -eq "OMRaut" -and $_.Version -eq $AppVersion }) {
-    throw "Version $AppVersion already exists in '$OutputDir'. Increment the app version and use a new release tag."
+  $ParsedAppVersion = [version]$AppVersion
+  $HasEqualOrNewer = $false
+  foreach ($Entry in $ExistingEntries) {
+    if ($Entry.PackageId -ne "OMRaut") { continue }
+    $EntryVersion = $null
+    if ($Entry.Version -eq $AppVersion -or ([version]::TryParse($Entry.Version, [ref]$EntryVersion) -and $EntryVersion -ge $ParsedAppVersion)) {
+      $HasEqualOrNewer = $true
+      break
+    }
+  }
+  if ($HasEqualOrNewer) {
+    if ($env:OMR_VELOPACK_OUTPUT_DIR) {
+      throw "Version $AppVersion already exists in '$OutputDir'. Increment the app version and use a new release tag."
+    }
+    Write-Output "Replacing existing local Velopack output in '$OutputDir' for version $AppVersion..."
+    Get-ChildItem -LiteralPath $OutputDir -Force | Remove-Item -Recurse -Force
   }
 }
 $TempParent = if ($env:OMR_VELOPACK_TEMP_DIR) {

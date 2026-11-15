@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QDate, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QGuiApplication
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QInputDialog,
     QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QSpinBox,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_exam import theme
+from omr_exam.icons import icon
 from omr_exam.answer_keys import (import_excel_key, import_master_sheet, parse_compact_key,
                                   parse_pasted_key, validate_answer_key, write_sample_key)
 from omr_exam.config import validate_config
@@ -987,34 +988,70 @@ class ReferenceDataDialog(AppDialog):
         title = "Manage classes" if classes_only else ("Manage subjects" if subjects_only else "Manage classes and subjects")
         super().__init__(parent, title,
                          "Reusable lists appear in student and test forms. Edit / Update renames saved records; Remove only hides a name from future choices.",
-                         "settings", "info", width=520 if (classes_only or subjects_only) else 760)
+                         "settings", "info", width=560 if (classes_only or subjects_only) else 800)
         self.repo = repo
         self.lists: dict[str, QListWidget] = {}
         self.cards: dict[str, QFrame] = {}
+        self.searches: dict[str, QLineEdit] = {}
+        self.quick_inputs: dict[str, QLineEdit] = {}
+        self._count_labels: dict[str, QLabel] = {}
         row = QHBoxLayout()
         row.setSpacing(14)
         for kind, card_title, description in (("classes", "Classes", "Used for student rosters and tests."),
                                               ("subjects", "Subjects", "A test can include several subjects.")):
             frame, content = card((14, 14, 14, 14), 8)
-            content.addWidget(label(card_title, "cardTitle"))
+            header = QHBoxLayout()
+            header.addWidget(label(card_title, "cardTitle"))
+            header.addStretch(1)
+            count_lbl = label("", "hint", wrap=False)
+            self._count_labels[kind] = count_lbl
+            header.addWidget(count_lbl)
+            content.addLayout(header)
             content.addWidget(label(description, "hint"))
+
+            search = QLineEdit()
+            search.setObjectName("search")
+            search.setClearButtonEnabled(True)
+            search.addAction(icon("search", theme.MUTED, 14), QLineEdit.LeadingPosition)
+            search.setPlaceholderText(f"Filter {kind}...")
+            search.setAccessibleName(f"Filter {kind}")
+            search.textChanged.connect(lambda _text, k=kind: self._populate_list(k))
+            self.searches[kind] = search
+            content.addWidget(search)
+
+            add_row = QHBoxLayout()
+            add_row.setSpacing(6)
+            quick_input = QLineEdit()
+            quick_input.setPlaceholderText(f"New {kind[:-1]} name...")
+            quick_input.setAccessibleName(f"New {kind[:-1]} name")
+            quick_input.returnPressed.connect(lambda k=kind: self._add_from_inline(k))
+            self.quick_inputs[kind] = quick_input
+            add_btn = button(f"Add", lambda k=kind: self._add_from_inline(k), "", "plus",
+                             f"Add a new {kind[:-1]} name")
+            add_row.addWidget(quick_input, 1)
+            add_row.addWidget(add_btn)
+            content.addLayout(add_row)
+
             listing = QListWidget()
             listing.setObjectName("checkList")
-            listing.setMinimumHeight(250)
+            listing.setMinimumHeight(230)
             listing.setAccessibleName(f"Global {card_title.lower()} list")
             listing.currentItemChanged.connect(lambda _current, _previous, k=kind: self._sync_buttons(k))
             listing.itemDoubleClicked.connect(lambda _item, k=kind: self._rename(k))
+            shortcut = QShortcut(QKeySequence("F2"), listing)
+            shortcut.setContext(Qt.WidgetShortcut)
+            shortcut.activated.connect(lambda k=kind: self._rename(k))
             self.lists[kind] = listing
             self.cards[kind] = frame
             content.addWidget(listing, 1)
             actions = QHBoxLayout()
-            add = button(f"Add {kind[:-1]}", lambda k=kind: self._add(k), "ghost", "plus")
             rename = button("Edit / Update", lambda k=kind: self._rename(k), "ghost", "edit",
-                            "Edit or update this name across saved records")
+                            "Edit or update the selected name across saved records (double-click or F2)")
             remove = button("Remove", lambda k=kind: self._remove(k), "ghost", "trash")
             setattr(self, f"{kind}_rename", rename)
             setattr(self, f"{kind}_remove", remove)
-            actions.addWidget(add); actions.addWidget(rename); actions.addWidget(remove)
+            actions.addWidget(rename); actions.addWidget(remove)
+            actions.addStretch(1)
             content.addLayout(actions)
             row.addWidget(frame, 1)
         if subjects_only:
@@ -1022,16 +1059,36 @@ class ReferenceDataDialog(AppDialog):
         elif classes_only:
             self.cards["subjects"].hide()
         self.body.addLayout(row)
-        self.hint = label("Existing roster and test records are preserved when a name is removed from these choice lists.", "muted")
+        self.hint = label("Double-click any entry (or click Edit / Update) to rename it across tests and students.", "muted")
         self.body.addWidget(self.hint)
-        self.add_button("Done", "primary", accept=True, default=True)
+        self.add_button("Done", "primary", accept=True, default=False)
         self.refresh()
 
-    def refresh(self):
-        for kind, listing in self.lists.items():
-            listing.clear()
-            listing.addItems(self.repo.reference_values(kind))
-            self._sync_buttons(kind)
+    def refresh(self, select_kind: str | None = None, select_value: str | None = None):
+        for kind in self.lists:
+            target = select_value if kind == select_kind else None
+            self._populate_list(kind, select_value=target)
+
+    def _populate_list(self, kind: str, select_value: str | None = None):
+        listing = self.lists[kind]
+        previous = select_value if select_value is not None else self._selected(kind)
+        values = self.repo.reference_values(kind)
+        needle = self.searches[kind].text().strip().casefold()
+        shown = [v for v in values if not needle or needle in v.casefold()]
+        listing.blockSignals(True)
+        listing.clear()
+        listing.addItems(shown)
+        if previous:
+            for row in range(listing.count()):
+                if listing.item(row).text().casefold() == previous.casefold():
+                    listing.setCurrentRow(row)
+                    break
+        listing.blockSignals(False)
+        if len(values):
+            self._count_labels[kind].setText(f"{len(shown)} of {len(values)}" if needle else f"{len(values)}")
+        else:
+            self._count_labels[kind].setText("")
+        self._sync_buttons(kind)
 
     def _selected(self, kind: str) -> str:
         item = self.lists[kind].currentItem()
@@ -1042,6 +1099,19 @@ class ReferenceDataDialog(AppDialog):
         getattr(self, f"{kind}_rename").setEnabled(selected)
         getattr(self, f"{kind}_remove").setEnabled(selected)
 
+    def _add_from_inline(self, kind: str):
+        field = self.quick_inputs[kind]
+        value = field.text().strip()
+        if not value:
+            self._add(kind)
+            return
+        try:
+            self.repo.add_reference_value(kind, value)
+            field.clear()
+            self.refresh(select_kind=kind, select_value=value)
+        except Exception as exc:
+            alert(self, "Could not add the name", str(exc), "bad")
+
     def _add(self, kind: str):
         title = "Add class" if kind == "classes" else "Add subject"
         value, accepted = QInputDialog.getText(self, title, f"{title.removeprefix('Add ')} name:")
@@ -1049,7 +1119,7 @@ class ReferenceDataDialog(AppDialog):
             return
         try:
             self.repo.add_reference_value(kind, value)
-            self.refresh()
+            self.refresh(select_kind=kind, select_value=value.strip())
         except Exception as exc:
             alert(self, "Could not add the name", str(exc), "bad")
 
@@ -1057,12 +1127,12 @@ class ReferenceDataDialog(AppDialog):
         old = self._selected(kind)
         if not old:
             return
-        value, accepted = QInputDialog.getText(self, "Rename", "New name:", text=old)
-        if not accepted:
+        value, accepted = QInputDialog.getText(self, "Edit / Update", "New name:", text=old)
+        if not accepted or value.strip() == old:
             return
         try:
             self.repo.rename_reference_value(kind, old, value)
-            self.refresh()
+            self.refresh(select_kind=kind, select_value=value.strip())
         except Exception as exc:
             alert(self, "Could not rename the entry", str(exc), "bad")
 
@@ -1083,10 +1153,8 @@ class StudentDialog(AppDialog):
                  classes: list[str] | None = None):
         super().__init__(parent, "Edit student" if editing else "Add student",
                          "The roll number must match what students bubble on the sheet.", "user-plus", "info", width=460)
+        self.original_roll_number = roll_number.strip() if editing else None
         self.roll = QLineEdit(roll_number); self.roll.setPlaceholderText("e.g. 000123")
-        if editing:
-            self.roll.setReadOnly(True)
-            self.roll.setEnabled(False)
         self.name = QLineEdit(name); self.name.setPlaceholderText("Full name")
         self.class_name = SuggestField(classes or [], "Class (optional)", class_name)
         form = QFormLayout(); form.setVerticalSpacing(10); form.setHorizontalSpacing(16)

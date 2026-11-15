@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import csv
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,9 @@ from omr_exam.dialogs import (AnswerKeyDialog, BatchLogDialog, BatchPickerDialog
                               ReferenceDataDialog, StudentDialog)
 from omr_exam.icons import icon, icon_size, pixmap
 from omr_exam.ingest import SUPPORTED_SCAN_SUFFIXES, count_scan_pages, scan_files_in_folder
-from omr_exam.reports import (EXPORTS, _subject_for_question, class_results, distractor_analysis, export_all,
-                              export_function, item_analysis, summary_stats)
+from omr_exam.reports import (EXPORTS, _all_test_subjects, _student_subject_scores, _subject_for_question, class_results,
+                              distractor_analysis, export_all, export_function, item_analysis, max_score,
+                              subject_max_scores, subject_summary, summary_stats)
 from omr_exam.review import ReviewPage
 from omr_exam.scan_job import ScanOutcome, ScanProgress, ScanWorker, process_scan_batch
 from omr_exam.sheets import generate_sheet_pdf
@@ -149,6 +151,14 @@ def _outcome_tone(text: str) -> str:
     return {"Correct": "good", "Incorrect": "bad", "Blank": "warn"}.get(text, "neutral")
 
 
+def _natural_roll_key(value: Any) -> tuple[int, tuple[tuple[int, Any], ...]]:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return (1, ())
+    parts = [part for part in re.split(r"(\d+)", text) if part]
+    return (0, tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
@@ -161,7 +171,14 @@ class MainWindow(QMainWindow):
         self.dashboard_batches: list[dict[str, Any]] = []
         self.staged_scans: list[tuple[Path, int | None]] = []
         self._scan_worker: ScanWorker | None = None
+        self._all_result_rows: list[dict[str, Any]] = []
         self._result_rows: list[dict[str, Any]] = []
+        self._result_subjects: list[str] = []
+        self._results_context: tuple[int | None, int | None] | None = None
+        self._selected_result_key: tuple[Any, ...] | None = None
+        self._rendered_student_detail_key: tuple[Any, ...] | None = None
+        self._review_dirty = False
+        self._tests_rows: list[dict[str, Any]] = []
         self._current_page = "dashboard"
         self.setWindowTitle("OMRaut")
         from omr_exam.icons import app_icon
@@ -312,7 +329,7 @@ class MainWindow(QMainWindow):
 
     def show_page(self, key: str):
         if key in ("review", "results") and self.batch_id is None:
-            self._open_latest_batch()
+            self._open_latest_batch(load_review=(key == "review"))
         self._current_page = key
         self.pages.setCurrentIndex(self.page_index[key])
         for name, nav in self.nav_buttons.items():
@@ -323,6 +340,8 @@ class MainWindow(QMainWindow):
             self.refresh_students()
         elif key == "scan":
             self.refresh_scan_page()
+        elif key == "review" and self._review_dirty:
+            self.load_review_table()
         elif key == "results":
             self.refresh_results_summary()
 
@@ -535,7 +554,7 @@ class MainWindow(QMainWindow):
             self.test_combo.setCurrentIndex(index)
             self.show_page("tests")
 
-    def _open_batch(self, batch: dict[str, Any], navigate: bool = True):
+    def _open_batch(self, batch: dict[str, Any], navigate: bool = True, load_review: bool = True):
         test_index = self.test_combo.findData(batch["test_id"])
         if test_index >= 0:
             self.test_combo.setCurrentIndex(test_index)
@@ -545,11 +564,14 @@ class MainWindow(QMainWindow):
         self.repo.reconcile_batch_roster_flags(self.batch_id)
         self.result_records = self.repo.results_for_batch(self.batch_id)
         self.batch_label.setText(f"Batch #{self.batch_id} · {len(self.result_records)} sheet(s) · {batch['status']}")
-        self.load_review_table()
+        if load_review or navigate or self._current_page == "review":
+            self.load_review_table()
+        else:
+            self._review_dirty = True
         if navigate:
             self.show_page("review")
 
-    def _open_latest_batch(self) -> None:
+    def _open_latest_batch(self, load_review: bool = True) -> None:
         """Open the batch last worked on (or the newest) for the active test, without changing page."""
         if self.active_test_id is None:
             return
@@ -558,9 +580,10 @@ class MainWindow(QMainWindow):
             return
         last = self.repo.get_setting("last_batch_id", "")
         chosen = next((batch for batch in batches if str(batch["id"]) == last), batches[0])
-        self._open_batch(chosen, navigate=False)
+        self._open_batch(chosen, navigate=False, load_review=load_review)
 
     def load_review_table(self):
+        self._review_dirty = False
         self.review_page.load()
 
     def save_reviews(self):
@@ -578,7 +601,22 @@ class MainWindow(QMainWindow):
         split = QHBoxLayout()
         split.setSpacing(14)
 
-        list_card, ll = card((1, 4, 1, 6), 0)
+        list_card, ll = card((1, 10, 1, 6), 8)
+        search_bar = QHBoxLayout()
+        search_bar.setContentsMargins(14, 2, 14, 0)
+        search_bar.setSpacing(10)
+        self.tests_search = QLineEdit()
+        self.tests_search.setObjectName("search")
+        self.tests_search.setPlaceholderText("Search tests by name, class, subject, or key status")
+        self.tests_search.setClearButtonEnabled(True)
+        self.tests_search.addAction(icon("search", theme.MUTED, 16), QLineEdit.LeadingPosition)
+        self.tests_search.setAccessibleName("Search tests")
+        self.tests_search.textChanged.connect(self._apply_tests_filter)
+        search_bar.addWidget(self.tests_search, 1)
+        self.tests_hint = label("", "hint", wrap=False)
+        search_bar.addWidget(self.tests_hint)
+        ll.addLayout(search_bar)
+
         self.tests_table = table(["Test", "Class", "Subjects", "Questions", "Sets", "Answer key"], 0)
         self.tests_table.setFrameShape(QFrame.NoFrame)
         self.tests_table.setItemDelegateForColumn(5, PillDelegate(lambda text: _key_tone(text.split(" ")[0]), self.tests_table))
@@ -670,23 +708,43 @@ class MainWindow(QMainWindow):
         self.test_combo.setEnabled(bool(tests) and self._scan_worker is None)
         if not tests:
             self.test_combo.setPlaceholderText("No tests yet")
-        self.tests_table.blockSignals(True)
-        self.tests_table.setRowCount(len(tests))
-        for row, item in enumerate(tests):
+        cached_rows: list[dict[str, Any]] = []
+        for item in tests:
             try:
                 config = self.repo.config_for_test(item["id"])
                 values = [item["title"], config["test"]["class"], ", ".join(config["test"]["subjects"]), str(len(config["questions"])),
                           ", ".join(config["sheet"]["set_codes"]), self._key_status(config)[1]]
             except Exception:
                 values = [item["title"], "", "", "", "", "Unreadable"]
-            for column, value in enumerate(values):
-                self.tests_table.setItem(row, column, _item(value, item["id"] if column == 0 else None))
-            if self.test_combo.itemData(self.test_combo.currentIndex()) == item["id"]:
-                self.tests_table.selectRow(row)
-        self.tests_table.blockSignals(False)
+            cached_rows.append({"id": item["id"], "values": values, "haystack": " ".join(values).casefold()})
+        self._tests_rows = cached_rows
+        self._apply_tests_filter()
         self.tests_stack.setCurrentIndex(0 if tests else 1)
         self.select_test(self.test_combo.currentIndex())
         self.refresh_dashboard()
+
+    def _apply_tests_filter(self, *_args):
+        if not hasattr(self, "tests_table"):
+            return
+        tokens = self.tests_search.text().strip().casefold().split() if hasattr(self, "tests_search") else []
+        rows = [row for row in self._tests_rows if not tokens or all(tok in row["haystack"] for tok in tokens)]
+        current_id = self.test_combo.itemData(self.test_combo.currentIndex())
+        self.tests_table.setUpdatesEnabled(False)
+        self.tests_table.blockSignals(True)
+        try:
+            self.tests_table.setRowCount(len(rows))
+            for r_idx, row in enumerate(rows):
+                for column, value in enumerate(row["values"]):
+                    self.tests_table.setItem(r_idx, column, _item(value, row["id"] if column == 0 else None))
+                if current_id is not None and row["id"] == current_id:
+                    self.tests_table.selectRow(r_idx)
+        finally:
+            self.tests_table.blockSignals(False)
+            self.tests_table.setUpdatesEnabled(True)
+        total = len(self._tests_rows)
+        if hasattr(self, "tests_hint"):
+            self.tests_hint.setText(
+                (f"{len(rows)} of {total} shown" if tokens else f"{total} test{'s' if total != 1 else ''}") if total else "")
 
     def select_test(self, index: int):
         test_id = self.test_combo.itemData(index) if index >= 0 else None
@@ -750,7 +808,7 @@ class MainWindow(QMainWindow):
         self.refresh_scan_page()
         self.update_review_badge()
         if self._current_page in ("review", "results") and self.batch_id is None:
-            self._open_latest_batch()
+            self._open_latest_batch(load_review=(self._current_page == "review"))
         if self._current_page == "results":
             self.refresh_results_summary()
         elif self._current_page == "dashboard":
@@ -764,6 +822,14 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self.refresh_tests()
         self.refresh_students()
+        if self.batch_id is not None:
+            self.result_records = self.repo.results_for_batch(self.batch_id)
+            if self._current_page == "review":
+                self.load_review_table()
+            else:
+                self._review_dirty = True
+            if self._current_page == "results":
+                self.refresh_results_summary()
         if subjects_only:
             return self.repo.reference_values("subjects")
         if classes_only:
@@ -936,12 +1002,20 @@ class MainWindow(QMainWindow):
         self.student_search.setClearButtonEnabled(True)
         self.student_search.addAction(icon("search", theme.MUTED, 16), QLineEdit.LeadingPosition)
         self.student_search.textChanged.connect(self.refresh_students)
-        self.student_search.setMaximumWidth(380)
+        self.student_search.setMaximumWidth(360)
         self.student_search.setAccessibleName("Search students")
         bar.addWidget(self.student_search, 1)
+        self.student_class_filter = combo(170)
+        self.student_class_filter.addItem("All classes", "")
+        self.student_class_filter.setAccessibleName("Filter students by class")
+        self.student_class_filter.currentIndexChanged.connect(self.refresh_students)
+        bar.addWidget(self.student_class_filter)
         self.students_hint = label("", "hint", wrap=False)
         bar.addWidget(self.students_hint)
         bar.addStretch(1)
+        self.edit_student_button = button("Edit selected", self._edit_selected_student, "", "edit", "Edit the selected student")
+        self.edit_student_button.setEnabled(False)
+        bar.addWidget(self.edit_student_button)
         self.delete_students_button = button("Delete selected", self.delete_students, "danger", "trash")
         self.delete_students_button.setEnabled(False)
         bar.addWidget(self.delete_students_button)
@@ -950,10 +1024,9 @@ class MainWindow(QMainWindow):
         self.students_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.students_table.setColumnWidth(0, 160)
         self.students_table.cellDoubleClicked.connect(self.edit_student)
-        self.students_table.itemSelectionChanged.connect(
-            lambda: self.delete_students_button.setEnabled(bool(self.students_table.selectedIndexes())))
+        self.students_table.itemSelectionChanged.connect(self._sync_student_actions)
         self.students_table.setAccessibleName("Student roster")
-        self.students_table.setToolTip("Double-click a student to edit")
+        self.students_table.setToolTip("Select a student and click Edit selected, or double-click a row")
         self.students_empty = EmptyState("students", "No students yet",
                                          "Import a class list from Excel or CSV with the columns roll_number, name and "
                                          "class_name, or add students one at a time.",
@@ -968,18 +1041,60 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.students_stack, 1)
         return page
 
+    def _sync_student_actions(self):
+        rows = {idx.row() for idx in self.students_table.selectedIndexes()}
+        self.edit_student_button.setEnabled(len(rows) == 1)
+        self.delete_students_button.setEnabled(bool(rows))
+
+    def _edit_selected_student(self):
+        rows = sorted({idx.row() for idx in self.students_table.selectedIndexes()})
+        if len(rows) == 1:
+            self.edit_student(rows[0])
+
     def refresh_students(self, *_args):
-        needle = self.student_search.text().strip().lower()
         everyone = self.repo.students()
-        students = [s for s in everyone if not needle or needle in f"{s['roll_number']} {s['name']} {s['class_name']}".lower()]
-        self.students_table.setRowCount(len(students))
-        for row, student in enumerate(students):
-            for column, key in enumerate(("roll_number", "name", "class_name")):
-                self.students_table.setItem(row, column, _item(student[key]))
+        if hasattr(self, "student_class_filter"):
+            previous_class = self.student_class_filter.currentData() or ""
+            known = sorted({cls for cls in (self._known_classes() + [str(s.get("class_name") or "").strip() for s in everyone]) if cls},
+                           key=str.casefold)
+            self.student_class_filter.blockSignals(True)
+            self.student_class_filter.clear()
+            self.student_class_filter.addItem("All classes", "")
+            for cls in known:
+                self.student_class_filter.addItem(cls, cls)
+            idx = self.student_class_filter.findData(previous_class)
+            self.student_class_filter.setCurrentIndex(idx if idx >= 0 else 0)
+            self.student_class_filter.blockSignals(False)
+            class_filter = self.student_class_filter.currentData() or ""
+        else:
+            class_filter = ""
+
+        tokens = self.student_search.text().strip().casefold().split()
+        students = []
+        for s in everyone:
+            if class_filter and str(s.get("class_name") or "").strip().casefold() != class_filter.casefold():
+                continue
+            if tokens:
+                haystack = f"{s['roll_number']} {s['name']} {s['class_name']}".casefold()
+                if not all(tok in haystack for tok in tokens):
+                    continue
+            students.append(s)
+
+        self.students_table.setUpdatesEnabled(False)
+        try:
+            self.students_table.setRowCount(len(students))
+            for row, student in enumerate(students):
+                for column, key in enumerate(("roll_number", "name", "class_name")):
+                    self.students_table.setItem(row, column, _item(student[key]))
+        finally:
+            self.students_table.setUpdatesEnabled(True)
         total = len(everyone)
+        filtered = bool(tokens or class_filter)
         self.students_stack.setCurrentIndex(0 if total else 1)
-        self.students_hint.setText((f"{len(students)} of {total} shown" if needle else f"{total} student{'s' if total != 1 else ''}") if total else "")
+        self.students_hint.setText((f"{len(students)} of {total} shown" if filtered else f"{total} student{'s' if total != 1 else ''}") if total else "")
+        self.edit_student_button.setVisible(bool(total))
         self.delete_students_button.setVisible(bool(total))
+        self._sync_student_actions()
 
     def add_student(self):
         dialog = StudentDialog(self, classes=self._known_classes())
@@ -990,11 +1105,11 @@ class MainWindow(QMainWindow):
         roll, name, cls = (self.students_table.item(row, c).text() for c in range(3))
         dialog = StudentDialog(self, roll, name, cls, editing=True, classes=self._known_classes())
         if dialog.exec():
-            self._save_student(*dialog.values())
+            self._save_student(*dialog.values(), original_roll=dialog.original_roll_number)
 
-    def _save_student(self, roll: str, name: str, cls: str):
+    def _save_student(self, roll: str, name: str, cls: str, *, original_roll: str | None = None):
         try:
-            self.repo.save_student(roll, name, cls)
+            self.repo.save_student(roll, name, cls, original_roll_number=original_roll)
             self._after_roster_change()
             self.toast(f"Saved {name}")
         except Exception as exc:
@@ -1016,7 +1131,12 @@ class MainWindow(QMainWindow):
         if self.batch_id is not None:
             self.repo.reconcile_batch_roster_flags(self.batch_id)
             self.result_records = self.repo.results_for_batch(self.batch_id)
-            self.load_review_table()
+            if self._current_page == "review":
+                self.load_review_table()
+            else:
+                self._review_dirty = True
+            if self._current_page == "results":
+                self.refresh_results_summary()
         self.refresh_students()
         self.refresh_dashboard()
 
@@ -1500,18 +1620,34 @@ class MainWindow(QMainWindow):
         self.results_summary = Banner("Scan sheets or open a batch to see results here.", "info")
         layout.addWidget(self.results_summary)
 
-        stats = QHBoxLayout()
-        stats.setSpacing(14)
+        stats = QGridLayout()
+        stats.setSpacing(12)
+        for col in range(4):
+            stats.setColumnStretch(col, 1)
         self.result_stats: dict[str, StatTile] = {}
-        for key, caption, icon_name in (("sheets", "Sheets", "sheet"), ("average", "Average score", "results"),
-                                        ("median", "Median", "results"),
-                                        ("highest", "Highest", "chevron-up"), ("lowest", "Lowest", "chevron-down"),
-                                        ("pass", "Pass rate", "check-circle"), ("pending", "Need review", "review")):
+        stat_defs = (
+            ("sheets", "Sheets", "sheet"), ("average", "Average score", "results"),
+            ("median", "Median", "results"), ("pass", "Pass rate", "check-circle"),
+            ("highest", "Highest", "chevron-up"), ("lowest", "Lowest", "chevron-down"),
+            ("pending", "Need review", "review"),
+        )
+        for idx, (key, caption, icon_name) in enumerate(stat_defs):
             tile = StatTile(caption, icon_name)
             tile.set_value("–")
             self.result_stats[key] = tile
-            stats.addWidget(tile)
+            stats.addWidget(tile, idx // 4, idx % 4)
         layout.addLayout(stats)
+
+        subject_card, sbl = card((1, 16, 1, 6), 8)
+        sbl.addLayout(self._card_header("Subject results", "Class performance broken down by subject"))
+        self.subject_summary_table = table(["Subject", "Questions", "Max marks", "Average", "Avg %", "Highest", "Lowest"], 0)
+        self.subject_summary_table.setFrameShape(QFrame.NoFrame)
+        self.subject_summary_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.subject_summary_table.setMinimumHeight(108)
+        self.subject_summary_table.setMaximumHeight(220)
+        self.subject_summary_table.setAccessibleName("Subject-wise class results")
+        sbl.addWidget(self.subject_summary_table)
+        layout.addWidget(subject_card)
 
         charts = QHBoxLayout()
         charts.setSpacing(14)
@@ -1525,11 +1661,16 @@ class MainWindow(QMainWindow):
         dl.addWidget(self.quality_label)
         charts.addWidget(distribution, 3)
         hardest, hl = card((1, 16, 1, 6), 8)
-        hl.addLayout(self._card_header("Question analysis", "Hardest first. Discrimination shows how well a question separates strong and weak students"))
+        hardest_head = QVBoxLayout()
+        hardest_head.setContentsMargins(18, 0, 18, 0)
+        hardest_head.setSpacing(2)
+        hardest_head.addWidget(label("Question analysis", "cardTitle"))
+        hardest_head.addWidget(label("Hardest first. Discrimination shows how well a question separates strong and weak students.", "hint"))
+        hl.addLayout(hardest_head)
         self.hardest_table = table(["Q", "Topic", "Correct", "Discr.", "Top wrong"], 1)
         self.hardest_table.setFrameShape(QFrame.NoFrame)
         self.hardest_table.setSelectionMode(QAbstractItemView.NoSelection)
-        self.hardest_table.setMinimumHeight(232)
+        self.hardest_table.setMinimumHeight(200)
         self.hardest_table.setAccessibleName("Question analysis, hardest first")
         hl.addWidget(self.hardest_table, 1)
         charts.addWidget(hardest, 2)
@@ -1538,27 +1679,80 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
         ranking, rl = card((1, 16, 1, 6), 8)
-        rl.addLayout(self._card_header("Student ranking", "Select a student to see every answer"))
-        self.performance_table = table(["Rank", "Roll number", "Student", "Class", "Set", "Score", "%", "Percentile", "Correct", "Wrong", "Blank", "Status"], 2)
+        rl.addLayout(self._card_header("Student ranking", "Click any student to see subject marks and every answer"))
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(18, 0, 18, 0)
+        controls.setSpacing(10)
+        self.results_search = QLineEdit()
+        self.results_search.setObjectName("search")
+        self.results_search.setPlaceholderText("Search by roll number, name, class, or set")
+        self.results_search.setClearButtonEnabled(True)
+        self.results_search.addAction(icon("search", theme.MUTED, 16), QLineEdit.LeadingPosition)
+        self.results_search.setMinimumWidth(180)
+        self.results_search.setMaximumWidth(340)
+        self.results_search.setAccessibleName("Search student results")
+        self.results_search.textChanged.connect(self._apply_results_filter)
+        controls.addWidget(self.results_search, 1)
+
+        controls.addWidget(label("Sort", "hint", wrap=False))
+        self.results_sort = combo(170)
+        self.results_sort.setAccessibleName("Sort student results")
+        self.results_sort.currentIndexChanged.connect(self._apply_results_filter)
+        controls.addWidget(self.results_sort)
+
+        controls.addWidget(label("Filter", "hint", wrap=False))
+        self.results_filter = combo(150)
+        self.results_filter.setAccessibleName("Filter student results")
+        for title, key in (("All students", "all"), ("Passed (≥40%)", "passed"), ("Failed (<40%)", "failed"),
+                           ("Ready", "ready"), ("Needs review", "review")):
+            self.results_filter.addItem(title, key)
+        self.results_filter.currentIndexChanged.connect(self._apply_results_filter)
+        controls.addWidget(self.results_filter)
+
+        self.results_filter_hint = label("", "hint", wrap=False)
+        controls.addWidget(self.results_filter_hint)
+        controls.addStretch(1)
+        rl.addLayout(controls)
+
+        self.performance_table = table(["Rank", "Roll number", "Student", "Class", "Set", "Score", "%", "Percentile", "Correct", "Wrong", "Blank", "Status"])
         self.performance_table.setFrameShape(QFrame.NoFrame)
-        self.performance_table.setMinimumHeight(250)
-        self.performance_table.setItemDelegateForColumn(11, PillDelegate(lambda text: "good" if text == "Ready" else "warn", self.performance_table))
+        self.performance_table.setMinimumHeight(230)
+        self._performance_default_delegate = self.performance_table.itemDelegate()
+        self._performance_status_delegate = PillDelegate(lambda text: "good" if text == "Ready" else "warn", self.performance_table)
+        self.performance_table.setItemDelegateForColumn(11, self._performance_status_delegate)
         self.performance_table.setAccessibleName("Ranked student performance")
-        self.performance_table.currentCellChanged.connect(lambda row, _c, _pr, _pc: self.show_student_performance(row))
+        self.performance_table.cellClicked.connect(lambda row, _c: self._on_performance_selection_changed(row))
+        self.performance_table.currentCellChanged.connect(lambda row, _c, _pr, _pc: self._on_performance_selection_changed(row))
+        self.performance_table.itemSelectionChanged.connect(self._on_performance_selection_changed)
         rl.addWidget(self.performance_table, 1)
         split.addWidget(ranking)
+
         detail, sl = card((1, 16, 1, 6), 8)
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(18, 0, 18, 0)
+        head_row.setSpacing(12)
         head = QVBoxLayout()
-        head.setContentsMargins(18, 0, 18, 0)
         head.setSpacing(2)
         self.student_title = label("Student answers", "cardTitle")
         self.student_performance_detail = label("Select a student to inspect each response and the expected answer.", "hint")
+        self.student_subject_summary = label("", "hint")
+        self.student_subject_summary.hide()
         head.addWidget(self.student_title)
         head.addWidget(self.student_performance_detail)
-        sl.addLayout(head)
-        self.question_performance_table = table(["Question", "Section / topic", "Response", "Answer key", "Outcome", "Points"], 1)
+        head.addWidget(self.student_subject_summary)
+        head_row.addLayout(head, 1)
+        self.question_subject_filter = combo(190)
+        self.question_subject_filter.setAccessibleName("Filter student answers by subject")
+        self.question_subject_filter.currentIndexChanged.connect(self._refresh_student_question_table)
+        self.question_subject_filter.hide()
+        head_row.addWidget(self.question_subject_filter, 0, Qt.AlignTop)
+        sl.addLayout(head_row)
+
+        self.question_performance_table = table(["Question", "Subject / topic", "Response", "Answer key", "Outcome", "Points"], 1)
         self.question_performance_table.setFrameShape(QFrame.NoFrame)
         self.question_performance_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.question_performance_table.setMinimumHeight(180)
         self.question_performance_table.setItemDelegateForColumn(4, PillDelegate(_outcome_tone, self.question_performance_table))
         self.question_performance_table.setAccessibleName("Selected student's question by question results")
         sl.addWidget(self.question_performance_table, 1)
@@ -1569,9 +1763,89 @@ class MainWindow(QMainWindow):
         layout.addWidget(split, 1)
         return _scrollable(page)
 
+    @staticmethod
+    def _result_row_key(record: dict[str, Any]) -> tuple[Any, ...]:
+        return (record.get("id"), str(record.get("roll_number") or ""), str(record.get("image_path") or ""))
+
+    def _current_performance_row(self) -> int:
+        model = self.performance_table.selectionModel()
+        if model is not None:
+            selected = model.selectedRows()
+            if selected:
+                return selected[0].row()
+            indexes = model.selectedIndexes()
+            if indexes:
+                return indexes[0].row()
+        return self.performance_table.currentRow()
+
+    def _on_performance_selection_changed(self, row: int | None = None):
+        if row is None or row < 0:
+            row = self._current_performance_row()
+        if row >= 0:
+            self.show_student_performance(row)
+
+    def _configure_performance_columns(self, subjects: list[str], show_set: bool) -> list[str]:
+        headers = ["Rank", "Roll number", "Student", "Class", "Set", *subjects, "Total", "%", "Percentile", "Correct", "Wrong", "Blank", "Status"]
+        old_count = self.performance_table.columnCount()
+        for col in range(max(old_count, len(headers))):
+            self.performance_table.setItemDelegateForColumn(col, self._performance_default_delegate)
+        self.performance_table.setColumnCount(len(headers))
+        self.performance_table.setHorizontalHeaderLabels(headers)
+        self.performance_table.setItemDelegateForColumn(len(headers) - 1, self._performance_status_delegate)
+        self.performance_table.setColumnHidden(4, not show_set)
+        header = self.performance_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        for col in range(len(headers)):
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+        return headers
+
+    def _populate_sort_options(self, subjects: list[str]) -> None:
+        previous = self.results_sort.currentData() if self.results_sort.count() else "highest"
+        self.results_sort.blockSignals(True)
+        self.results_sort.clear()
+        options = [("Highest marks", "highest"), ("Lowest marks", "lowest"),
+                   ("Roll number", "roll"), ("Student name", "name")]
+        if len(subjects) > 1:
+            options.extend((f"Highest: {subject}", f"subject_desc:{subject}") for subject in subjects)
+        for text, key in options:
+            self.results_sort.addItem(text, key)
+        idx = self.results_sort.findData(previous)
+        self.results_sort.setCurrentIndex(idx if idx >= 0 else 0)
+        self.results_sort.blockSignals(False)
+
+    def _populate_question_subject_filter(self, subjects: list[str]) -> None:
+        previous = self.question_subject_filter.currentData() if self.question_subject_filter.count() else ""
+        self.question_subject_filter.blockSignals(True)
+        self.question_subject_filter.clear()
+        self.question_subject_filter.addItem("All subjects", "")
+        for subject in subjects:
+            self.question_subject_filter.addItem(subject, subject)
+        idx = self.question_subject_filter.findData(previous)
+        self.question_subject_filter.setCurrentIndex(idx if idx >= 0 else 0)
+        self.question_subject_filter.setVisible(len(subjects) > 1)
+        self.question_subject_filter.blockSignals(False)
+
     def refresh_results_summary(self):
         if not hasattr(self, "performance_table"):
             return
+        context = (self.active_test_id, self.batch_id)
+        if context != self._results_context:
+            self._results_context = context
+            self._selected_result_key = None
+            if hasattr(self, "results_search"):
+                self.results_search.blockSignals(True)
+                self.results_search.clear()
+                self.results_search.blockSignals(False)
+            if hasattr(self, "results_filter"):
+                self.results_filter.blockSignals(True)
+                self.results_filter.setCurrentIndex(0)
+                self.results_filter.blockSignals(False)
+            if hasattr(self, "results_sort"):
+                self.results_sort.blockSignals(True)
+                if self.results_sort.count():
+                    self.results_sort.setCurrentIndex(0)
+                self.results_sort.blockSignals(False)
+
         records = self.result_records
         has_results = bool(records) and bool(self.config)
         self.export_main_button.setEnabled(has_results)
@@ -1579,29 +1853,81 @@ class MainWindow(QMainWindow):
         if not has_results:
             for tile in self.result_stats.values():
                 tile.set_value("–")
+            self._all_result_rows = []
             self._result_rows = []
+            self._result_subjects = []
+            self._rendered_student_detail_key = None
+            self.subject_summary_table.setRowCount(0)
+            self.subject_summary_table.setFixedHeight(108)
             self.performance_table.setRowCount(0)
             self.question_performance_table.setRowCount(0)
             self.hardest_table.setRowCount(0)
             self.histogram.set_scores([], 1)
+            self.quality_label.setText("")
+            self.results_filter_hint.setText("")
             self.student_title.setText("Student answers")
             self.student_performance_detail.setText("Select a student to inspect each response and the expected answer.")
+            self.student_subject_summary.setText("")
+            self.student_subject_summary.hide()
+            self.question_subject_filter.hide()
             self.results_summary.set("No results yet for this test. Scan sheets to see scores here.", "info")
             self.results_summary.set_action("Scan sheets", lambda: self.show_page("scan"))
             return
-        scores = [float(r["score"]) for r in records]
-        pending = sum(bool(r.get("review_required")) for r in records)
-        self.result_stats["sheets"].set_value(str(len(records)), f"Batch #{self.batch_id}")
+
+        scoring_error = ""
+        try:
+            computed_rows = class_results(self.config, records)
+        except Exception as exc:
+            computed_rows = [{**r, "rank": "—", "total": None, "percent": None, "percentile": None,
+                              "correct": 0, "incorrect": 0, "blank": 0, "review_required": True, "questions": []}
+                             for r in records]
+            scoring_error = str(exc)
+
+        subjects = _all_test_subjects(self.config)
+        self._result_subjects = subjects
+        maxima_by_set = {code: subject_max_scores(self.config, code) for code in self.config.get("sets", {})}
+        q_subj_by_set = {code: _subject_for_question(self.config, code) for code in self.config.get("sets", {})}
+        default_maxima = subject_max_scores(self.config, None)
+        default_q_subj = _subject_for_question(self.config, None)
+        for row in computed_rows:
+            if row.get("total") is not None and row.get("questions"):
+                set_code = row.get("set_code")
+                q_subject = q_subj_by_set.get(set_code, default_q_subj)
+                row["subject_scores"] = _student_subject_scores(row, q_subject)
+                s_max = maxima_by_set.get(set_code, default_maxima)
+                breakdown: dict[str, dict[str, Any]] = {}
+                for subj in subjects:
+                    breakdown[subj] = {"score": float(row["subject_scores"].get(subj, 0.0)),
+                                       "max": float(s_max.get(subj, 0.0)),
+                                       "correct": 0, "incorrect": 0, "blank": 0}
+                for item in row["questions"]:
+                    subj = q_subject.get(str(item["question"]))
+                    if subj and subj in breakdown:
+                        st = item.get("status")
+                        if st == "correct":
+                            breakdown[subj]["correct"] += 1
+                        elif st == "incorrect":
+                            breakdown[subj]["incorrect"] += 1
+                        elif st == "blank":
+                            breakdown[subj]["blank"] += 1
+                row["subject_breakdown"] = breakdown
+            else:
+                row["subject_scores"] = {}
+                row["subject_breakdown"] = {}
+
+        scores = [float(row["total"]) if row.get("total") is not None else float(row.get("score", 0)) for row in computed_rows]
+        pending = sum(bool(r.get("review_required")) for r in computed_rows)
+        self.result_stats["sheets"].set_value(str(len(computed_rows)), f"Batch #{self.batch_id}")
         self.result_stats["average"].set_value(f"{sum(scores) / len(scores):.1f}")
         self.result_stats["highest"].set_value(f"{max(scores):g}")
         self.result_stats["lowest"].set_value(f"{min(scores):g}")
         try:
-            figures = summary_stats(self.config, records)
+            figures = summary_stats(self.config, records, rows=computed_rows)
         except Exception:
             figures = {}
         self.result_stats["median"].set_value("–" if figures.get("median") is None else f"{figures['median']:g}")
         self.result_stats["pass"].set_value("–" if figures.get("pass_rate") is None else f"{figures['pass_rate']:g}%",
-                                            f"at {figures.get('pass_percent', 40):g}% of the maximum")
+                                            f"pass mark {figures.get('pass_percent', 40):g}%")
         reliability = figures.get("reliability")
         meaning = ("" if reliability is None else " (excellent)" if reliability >= 0.8 else " (good)" if reliability >= 0.7
                    else " (acceptable)" if reliability >= 0.6 else " (low, treat the ranking with care)")
@@ -1611,7 +1937,10 @@ class MainWindow(QMainWindow):
                else f"reliability (KR-20) {reliability:.2f}{meaning}"))
         self.result_stats["pending"].set_value(str(pending), "", "warn" if pending else "good")
         status = self.repo.batch_status(self.batch_id) if self.batch_id is not None else {"status": "complete"}
-        if status["status"] != "complete":
+        if scoring_error:
+            self.results_summary.set(f"<b>Could not score every sheet</b> ({scoring_error}). Update the answer key to view full scores.", "bad")
+            self.results_summary.set_action("Answer key", self.edit_answer_key)
+        elif status["status"] != "complete":
             self.results_summary.set(f"<b>This batch is incomplete</b> ({status['processed_pages']} of {status['expected_pages']} pages, "
                                      f"{status['error_count']} errors). Scan a clean batch to export official results.", "bad")
             self.results_summary.set_action("View batch log", self.view_batch_log)
@@ -1622,74 +1951,248 @@ class MainWindow(QMainWindow):
         else:
             self.results_summary.set("<b>All sheets reviewed.</b> Results are final and ready to export.", "good")
             self.results_summary.set_action()
-        scoring = self.config["scoring"]
-        dropped = {str(q) for q in scoring.get("dropped_questions", [])}
-        maximum = sum(float(scoring["correct"]) for q in self.config["questions"] if str(q["id"]) not in dropped)
+        maximum = max_score(self.config)
         self.histogram.set_scores(scores, maximum)
 
         try:
-            analysis = [row for row in item_analysis(self.config, records) if row.get("difficulty") is not None]
-            wrong_option = {row["question"]: row for row in distractor_analysis(self.config, records)}
+            subj_rows = subject_summary(self.config, records, rows=computed_rows)
+        except Exception:
+            subj_rows = []
+        self.subject_summary_table.setUpdatesEnabled(False)
+        try:
+            self.subject_summary_table.setRowCount(len(subj_rows))
+            for index, srow in enumerate(subj_rows):
+                vals = (
+                    srow["subject"],
+                    srow["questions"],
+                    f"{srow['maximum']:g}",
+                    "—" if srow["mean"] is None else f"{srow['mean']:g}",
+                    "—" if srow["mean_percent"] is None else f"{srow['mean_percent']:g}%",
+                    "—" if srow["high"] is None else f"{srow['high']:g}",
+                    "—" if srow["low"] is None else f"{srow['low']:g}",
+                )
+                for col, val in enumerate(vals):
+                    self.subject_summary_table.setItem(index, col, _item(val, align=Qt.AlignRight if col > 0 else None))
+            header_h = max(34, self.subject_summary_table.horizontalHeader().height())
+            self.subject_summary_table.setFixedHeight(min(220, max(108, header_h + len(subj_rows) * 38 + 6)))
+        finally:
+            self.subject_summary_table.setUpdatesEnabled(True)
+
+        try:
+            analysis = [row for row in item_analysis(self.config, records, rows=computed_rows) if row.get("difficulty") is not None]
+            wrong_option = {row["question"]: row for row in distractor_analysis(self.config, records, rows=computed_rows)}
         except Exception:
             analysis, wrong_option = [], {}
         analysis.sort(key=lambda row: (row["difficulty"], row["question"]))
-        self.hardest_table.setRowCount(len(analysis))
-        for index, row in enumerate(analysis):
-            wrong = wrong_option.get(row["question"], {})
-            discrimination = row.get("discrimination")
-            self.hardest_table.setItem(index, 0, _item(f"Q{row['question']}"))
-            self.hardest_table.setItem(index, 1, _item(row.get("topic") or "—"))
-            self.hardest_table.setItem(index, 2, _item(f"{round(row['difficulty'] * 100)}%", align=Qt.AlignRight))
-            self.hardest_table.setItem(index, 3, _item("—" if discrimination is None else f"{discrimination:+.2f}", align=Qt.AlignRight))
-            self.hardest_table.setItem(index, 4, _item(f"{wrong['top_wrong']} ({wrong['top_wrong_count']})" if wrong.get("top_wrong") else "—",
-                                                       align=Qt.AlignRight))
-            if discrimination is not None and discrimination < 0.1:
-                self.hardest_table.item(index, 3).setForeground(QColor(theme.WARN))
+        self.hardest_table.setUpdatesEnabled(False)
+        try:
+            self.hardest_table.setRowCount(len(analysis))
+            for index, row in enumerate(analysis):
+                wrong = wrong_option.get(row["question"], {})
+                discrimination = row.get("discrimination")
+                self.hardest_table.setItem(index, 0, _item(f"Q{row['question']}"))
+                self.hardest_table.setItem(index, 1, _item(row.get("topic") or "—"))
+                self.hardest_table.setItem(index, 2, _item(f"{round(row['difficulty'] * 100)}%", align=Qt.AlignRight))
+                self.hardest_table.setItem(index, 3, _item("—" if discrimination is None else f"{discrimination:+.2f}", align=Qt.AlignRight))
+                self.hardest_table.setItem(index, 4, _item(f"{wrong['top_wrong']} ({wrong['top_wrong_count']})" if wrong.get("top_wrong") else "—",
+                                                           align=Qt.AlignRight))
+                if discrimination is not None and discrimination < 0.1:
+                    self.hardest_table.item(index, 3).setForeground(QColor(theme.WARN))
+        finally:
+            self.hardest_table.setUpdatesEnabled(True)
 
-        rows = self._result_rows = class_results(self.config, records)
+        self._all_result_rows = computed_rows
+        self._populate_sort_options(subjects)
+        self._populate_question_subject_filter(subjects)
+        self._rendered_student_detail_key = None
+        self._apply_results_filter()
+
+    def _apply_results_filter(self, *_args):
+        if not hasattr(self, "performance_table") or not self.config:
+            return
+        all_rows = self._all_result_rows
+        subjects = self._result_subjects
+        tokens = self.results_search.text().strip().casefold().split()
+        filter_mode = self.results_filter.currentData() or "all"
+        sort_mode = self.results_sort.currentData() or "highest"
+
+        filtered: list[dict[str, Any]] = []
+        for row in all_rows:
+            status_text = "Needs review" if row.get("review_required") else "Ready"
+            if filter_mode == "passed" and (row.get("percent") is None or float(row["percent"]) < 40.0):
+                continue
+            if filter_mode == "failed" and (row.get("percent") is None or float(row["percent"]) >= 40.0):
+                continue
+            if filter_mode == "ready" and (row.get("review_required") or row.get("total") is None):
+                continue
+            if filter_mode == "review" and not (row.get("review_required") or row.get("total") is None):
+                continue
+            if tokens:
+                haystack = " ".join((
+                    str(row.get("roll_number") or ""),
+                    str(row.get("student_name") or ""),
+                    str(row.get("class_name") or ""),
+                    str(row.get("set_code") or ""),
+                    status_text,
+                )).casefold()
+                if not all(tok in haystack for tok in tokens):
+                    continue
+            filtered.append(row)
+
+        if sort_mode == "lowest":
+            filtered.sort(key=lambda r: (r.get("total") is None, float(r["total"]) if r.get("total") is not None else 0.0,
+                                         _natural_roll_key(r.get("roll_number"))))
+        elif sort_mode == "roll":
+            filtered.sort(key=lambda r: (_natural_roll_key(r.get("roll_number")),
+                                         str(r.get("student_name") or "").casefold()))
+        elif sort_mode == "name":
+            filtered.sort(key=lambda r: (not bool(str(r.get("student_name") or "").strip()),
+                                         str(r.get("student_name") or "").casefold(),
+                                         _natural_roll_key(r.get("roll_number"))))
+        elif isinstance(sort_mode, str) and sort_mode.startswith("subject_desc:"):
+            target_subject = sort_mode.split(":", 1)[1]
+            filtered.sort(key=lambda r: (
+                r.get("total") is None,
+                -float(r.get("subject_scores", {}).get(target_subject, 0.0)),
+                -(float(r["total"]) if r.get("total") is not None else 0.0),
+                _natural_roll_key(r.get("roll_number")),
+            ))
+        else:
+            filtered.sort(key=lambda r: (r.get("total") is None,
+                                         -(float(r["total"]) if r.get("total") is not None else 0.0),
+                                         _natural_roll_key(r.get("roll_number"))))
+
+        self._result_rows = filtered
+        total_count = len(all_rows)
+        shown_count = len(filtered)
+        if total_count:
+            self.results_filter_hint.setText(
+                f"{shown_count} of {total_count} shown" if (tokens or filter_mode != "all")
+                else f"{total_count} student{'s' if total_count != 1 else ''}")
+        else:
+            self.results_filter_hint.setText("")
+
+        show_set = len(self.config["sheet"]["set_codes"]) >= 2
+        headers = self._configure_performance_columns(subjects, show_set)
+        right_cols = {0, *range(5, len(headers) - 1)}
+
+        self.performance_table.setUpdatesEnabled(False)
         self.performance_table.blockSignals(True)
-        self.performance_table.setColumnHidden(4, len(self.config["sheet"]["set_codes"]) < 2)
-        self.performance_table.setRowCount(len(rows))
-        for index, record in enumerate(rows):
-            values = (record["rank"], record.get("roll_number", "") or "—", record.get("student_name", "") or "—",
-                      record.get("class_name", "") or "—", record.get("set_code", "") or "—",
-                      "—" if record.get("total") is None else f"{record['total']:g}",
-                      "—" if record.get("percent") is None else f"{record['percent']:g}",
-                      "—" if record.get("percentile") is None else f"{record['percentile']:g}",
-                      record.get("correct", 0), record.get("incorrect", 0), record.get("blank", 0),
-                      "Needs review" if record.get("review_required") else "Ready")
-            for column, value in enumerate(values):
-                self.performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column in (0, 5, 6, 7, 8, 9, 10) else None))
-        self.performance_table.blockSignals(False)
-        if rows:
-            self.performance_table.selectRow(0)
-            self.show_student_performance(0, 0)
+        try:
+            self.performance_table.setRowCount(len(filtered))
+            for index, record in enumerate(filtered):
+                subj_scores = record.get("subject_scores", {})
+                subject_cells = ["—" if record.get("total") is None else f"{subj_scores.get(subj, 0.0):g}" for subj in subjects]
+                values = (
+                    record["rank"],
+                    record.get("roll_number", "") or "—",
+                    record.get("student_name", "") or "—",
+                    record.get("class_name", "") or "—",
+                    record.get("set_code", "") or "—",
+                    *subject_cells,
+                    "—" if record.get("total") is None else f"{record['total']:g}",
+                    "—" if record.get("percent") is None else f"{record['percent']:g}",
+                    "—" if record.get("percentile") is None else f"{record['percentile']:g}",
+                    record.get("correct", 0),
+                    record.get("incorrect", 0),
+                    record.get("blank", 0),
+                    "Needs review" if record.get("review_required") else "Ready",
+                )
+                row_key = self._result_row_key(record)
+                for column, value in enumerate(values):
+                    cell = _item(value, data=row_key if column == 0 else None, align=Qt.AlignRight if column in right_cols else None)
+                    self.performance_table.setItem(index, column, cell)
+            self.performance_table.resizeColumnsToContents()
+            self.performance_table.setColumnWidth(2, max(150, self.performance_table.columnWidth(2)))
+        finally:
+            self.performance_table.blockSignals(False)
+            self.performance_table.setUpdatesEnabled(True)
 
-    def show_student_performance(self, row: int, _column: int = 0):
+        self._rendered_student_detail_key = None
+        if filtered:
+            target_row = 0
+            if self._selected_result_key is not None:
+                match = next((i for i, row in enumerate(filtered) if self._result_row_key(row) == self._selected_result_key), None)
+                if match is not None:
+                    target_row = match
+            self.performance_table.blockSignals(True)
+            self.performance_table.setCurrentCell(target_row, 0)
+            self.performance_table.selectRow(target_row)
+            self.performance_table.blockSignals(False)
+            self.show_student_performance(target_row, 0, force=True)
+        else:
+            self.question_performance_table.setRowCount(0)
+            self.student_title.setText("No matching students" if total_count else "Student answers")
+            self.student_performance_detail.setText(
+                "No students match the current search or filter." if total_count
+                else "Select a student to inspect each response and the expected answer.")
+            self.student_subject_summary.setText("")
+            self.student_subject_summary.hide()
+
+    def _refresh_student_question_table(self, *_args):
+        row = self._current_performance_row()
+        if row >= 0:
+            self.show_student_performance(row, force=True)
+
+    def show_student_performance(self, row: int, _column: int = 0, *, force: bool = False):
         if not self.config:
             return
         rows = self._result_rows
         if row < 0 or row >= len(rows):
             return
         record = rows[row]
+        key = self._result_row_key(record)
+        subject_filter = self.question_subject_filter.currentData() or ""
+        render_key = (key, subject_filter)
+        if not force and render_key == self._rendered_student_detail_key:
+            return
+        self._selected_result_key = key
+        self._rendered_student_detail_key = render_key
+
         self.student_title.setText(record.get("student_name") or f"Roll number {record.get('roll_number') or '—'}")
         review_note = " · pending scan review" if record.get("review_required") else ""
         total = record.get("total")
+        percent = record.get("percent")
+        pct_note = "" if percent is None else f" ({percent:g}%)"
         self.student_performance_detail.setText(
-            f"Roll {record.get('roll_number') or '—'} · score {'—' if total is None else f'{total:g}'} · "
+            f"Roll {record.get('roll_number') or '—'} · score {'—' if total is None else f'{total:g}'}{pct_note} · "
             f"{record.get('correct', 0)} correct, {record.get('incorrect', 0)} wrong, {record.get('blank', 0)} blank{review_note}")
+
+        breakdown = record.get("subject_breakdown", {})
+        if breakdown:
+            parts = []
+            for subj in self._result_subjects:
+                info = breakdown.get(subj)
+                if info is not None:
+                    parts.append(f"{subj}: {info['score']:g}/{info['max']:g} ({info['correct']}✓ {info['incorrect']}✗ {info['blank']}–)")
+            self.student_subject_summary.setText("  ·  ".join(parts))
+            self.student_subject_summary.setVisible(bool(parts))
+        else:
+            self.student_subject_summary.setText("")
+            self.student_subject_summary.hide()
+
         question_rows = record.get("questions", [])
         metadata = {str(item["id"]): item for item in self.config["questions"]}
         q_subject = _subject_for_question(self.config, record.get("set_code"))
-        self.question_performance_table.setRowCount(len(question_rows))
-        for index, question in enumerate(question_rows):
+        visible_questions = []
+        for question in question_rows:
             meta = metadata.get(str(question["question"]), {})
             section_label = q_subject.get(str(question["question"])) or str(meta.get("section", ""))
-            topic = " · ".join(filter(None, (section_label, str(meta.get("topic", ""))))) or "—"
-            values = (question["question"], topic, question.get("answer") or "Blank", question.get("expected") or "—",
-                      str(question.get("status", "")).capitalize(), f"{question.get('points', 0):g}")
-            for column, value in enumerate(values):
-                self.question_performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column == 5 else None))
+            if subject_filter and section_label != subject_filter:
+                continue
+            visible_questions.append((question, meta, section_label))
+
+        self.question_performance_table.setUpdatesEnabled(False)
+        try:
+            self.question_performance_table.setRowCount(len(visible_questions))
+            for index, (question, meta, section_label) in enumerate(visible_questions):
+                topic = " · ".join(filter(None, (section_label, str(meta.get("topic", ""))))) or "—"
+                values = (question["question"], topic, question.get("answer") or "Blank", question.get("expected") or "—",
+                          str(question.get("status", "")).capitalize(), f"{question.get('points', 0):g}")
+                for column, value in enumerate(values):
+                    self.question_performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column == 5 else None))
+        finally:
+            self.question_performance_table.setUpdatesEnabled(True)
 
     def open_exports(self):
         if not self._exports_allowed():

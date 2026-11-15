@@ -519,41 +519,61 @@ class Repository:
     def reconcile_batch_roster_flags(self, batch_id: int) -> None:
         """Refresh duplicate/unknown ID flags from the current batch and roster."""
         records = self.results_for_batch(batch_id)
-        has_roster = self.has_students()
+        if not records:
+            return
+        with _database_connection(self.path) as db:
+            known_rolls = {str(row[0]) for row in db.execute("SELECT roll_number FROM students").fetchall()}
+        has_roster = bool(known_rolls)
         roll_counts: dict[str, int] = {}
         for record in records:
             roll = str(record.get("roll_number") or "")
             if roll:
                 roll_counts[roll] = roll_counts.get(roll, 0) + 1
         identity_kinds = {"duplicate_id", "unknown_id"}
+        updates: list[tuple[str, int, int]] = []
         for record in records:
             roll = str(record.get("roll_number") or "")
             flags = [flag for flag in record["flags"] if flag.get("kind") not in identity_kinds]
             if roll and roll_counts.get(roll, 0) > 1:
                 flags.append({"kind": "duplicate_id", "message": f"Roll number {roll} appears more than once in this batch"})
-            elif roll and has_roster and not self.student_exists(roll):
+            elif roll and has_roster and roll not in known_rolls:
                 flags.append({"kind": "unknown_id", "message": f"Roll number {roll} is not in the imported student roster"})
             has_identity_issue = any(flag.get("kind") in identity_kinds for flag in flags)
             previous_nonidentity_issues = [flag for flag in record["flags"]
                                            if flag.get("kind") not in identity_kinds | {"blank"}]
             review_required = has_identity_issue or (bool(record["review_required"]) and
                                                      (bool(previous_nonidentity_issues) or not record["flags"]))
-            self.set_result_flags(int(record["id"]), flags, review_required=review_required)
+            if flags != record["flags"] or review_required != bool(record["review_required"]):
+                updates.append((json.dumps(flags, ensure_ascii=False), int(review_required), int(record["id"])))
+        if updates:
+            with _database_connection(self.path) as db:
+                db.executemany("UPDATE results SET flags_json=?,review_required=? WHERE id=?", updates)
 
     def students(self) -> list[dict[str, Any]]:
         with _database_connection(self.path) as db:
             db.row_factory = sqlite3.Row
             return [dict(row) for row in db.execute("SELECT roll_number,name,class_name FROM students ORDER BY roll_number")]
 
-    def save_student(self, roll_number: str, name: str, class_name: str = "") -> None:
+    def save_student(self, roll_number: str, name: str, class_name: str = "",
+                     *, original_roll_number: str | None = None) -> None:
         roll_number = roll_number.strip()
+        old_roll = (original_roll_number or "").strip()
         if not roll_number:
             raise ValueError("Roll number is required")
         if not name.strip():
             raise ValueError("Student name is required")
         with _database_connection(self.path) as db:
-            db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name",
-                       (roll_number, name.strip(), class_name.strip()))
+            if old_roll and old_roll != roll_number:
+                if db.execute("SELECT 1 FROM students WHERE roll_number=?", (roll_number,)).fetchone() is not None:
+                    raise ValueError(f"Roll number {roll_number} already exists")
+                cursor = db.execute("UPDATE students SET roll_number=?,name=?,class_name=? WHERE roll_number=?",
+                                    (roll_number, name.strip(), class_name.strip(), old_roll))
+                if cursor.rowcount == 0:
+                    db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?)",
+                               (roll_number, name.strip(), class_name.strip()))
+            else:
+                db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name",
+                           (roll_number, name.strip(), class_name.strip()))
             self._merge_reference_values(db, "classes", [class_name])
 
     def delete_student(self, roll_number: str) -> None:
