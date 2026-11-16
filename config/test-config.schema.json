@@ -157,7 +157,7 @@
         "answer_grid_version": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 2
+          "maximum": 3
         }
       }
     },

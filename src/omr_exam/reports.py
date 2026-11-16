@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 import os
 from collections import Counter, defaultdict
@@ -1136,10 +1137,53 @@ def export_distractor_analysis_csv(config: dict[str, Any], records: list[dict[st
     return path
 
 
+def export_json(config: dict[str, Any], records: list[dict[str, Any]], output: str | Path) -> Path:
+    """Export ranked results, answers, summary statistics, and analyses as JSON."""
+    rows = class_results(config, records)
+    _require_exportable(config, records, rows=rows)
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    question_ids = [str(question["id"]) for question in config["questions"]]
+    formatted_rows = []
+    for row in rows:
+        source_file, page, imported_at_utc = source_file_details(row)
+        formatted_rows.append({
+            "rank": row["rank"],
+            "roll_number": row.get("roll_number", ""),
+            "student_name": row.get("student_name", ""),
+            "class_name": row.get("class_name", ""),
+            "set_code": row.get("set_code", ""),
+            "total": row.get("total"),
+            "percent": row.get("percent"),
+            "percentile": row.get("percentile"),
+            "correct": row.get("correct", 0),
+            "incorrect": row.get("incorrect", 0),
+            "blank": row.get("blank", 0),
+            "review_required": bool(row.get("review_required")),
+            "source_file": source_file,
+            "page": page,
+            "imported_at_utc": imported_at_utc,
+            "answers": {qid: row.get("answers", {}).get(qid, "") or "" for qid in question_ids},
+        })
+    payload = {
+        "format": "omr-results-v1",
+        "test": config.get("test", {}),
+        "max_score": max_score(config),
+        "summary": summary_stats(config, records),
+        "results": formatted_rows,
+        "item_analysis": item_analysis(config, records),
+        "topic_analysis": topic_analysis(config, records),
+        "subject_analysis": subject_analysis(config, records),
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 #: Every export, in the order shown to the user: key -> (title, description, file name)
 EXPORTS: dict[str, tuple[str, str, str]] = {
     "xlsx": ("Excel workbook", "Marklist plus summary, class and question analysis sheets", "marklist.xlsx"),
     "csv": ("Marklist (CSV)", "Ranked scores and every answer, for any spreadsheet", "marklist.csv"),
+    "json": ("Results (JSON)", "Ranked scores, answers, summary, and question analysis in JSON", "results.json"),
     "mark-list": ("Mark List (PDF)", "Ranked mark list with R, W, B counts, Marks, % and Rank", "mark-list.pdf"),
     "pdf": ("Results report (PDF)", "Printable ranked list with the question analysis", "results-report.pdf"),
     "subject-list": ("Subject-wise mark list (PDF)", "Candidate ranks with scores for each subject", "subject-wise-mark-list.pdf"),
@@ -1156,7 +1200,7 @@ EXPORTS: dict[str, tuple[str, str, str]] = {
 
 
 def export_function(kind: str):
-    mapping = {"xlsx": export_xlsx, "csv": export_csv, "mark-list": export_mark_list_pdf,
+    mapping = {"xlsx": export_xlsx, "csv": export_csv, "json": export_json, "mark-list": export_mark_list_pdf,
                "pdf": export_report_pdf, "cards": export_student_scorecards_pdf,
                "subject-list": export_subject_score_list_pdf, "responses": export_candidate_response_pdf,
                "assessment": export_assessment_pdf, "sections": export_subsection_pdf,

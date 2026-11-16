@@ -112,6 +112,8 @@ def name_box_mm(config: dict[str, Any], layout: SheetLayout) -> tuple[float, flo
     fields = config.get("sheet", {}).get("fields", [])
     if "name" not in fields:
         return None
+    if getattr(layout, "name_box", None) is not None:
+        return layout.name_box
     name_label = next((item for item in layout.identity_labels if item[0] == "NAME"), None)
     if name_label is None:
         return None

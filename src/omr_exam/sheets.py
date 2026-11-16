@@ -12,10 +12,13 @@ from omr_exam.layout import create_layout
 from omr_exam.resources import logo_image_reader
 
 MM = 72 / 25.4
-ACCENT = HexColor("#E6007E")
-ACCENT_LINE = HexColor("#E97AAE")
-ACCENT_PALE = HexColor("#FFF1F7")
-ROW_PALE = HexColor("#FFF8FB")
+# QualifyIAS brand palette (from qualifyias.com / the logo): deep red and black.
+ACCENT = HexColor("#B40000")
+ACCENT_LINE = HexColor("#C77B7B")
+ACCENT_PALE = HexColor("#FBEAEA")
+ROW_PALE = HexColor("#FCF3F3")
+INSTITUTE_ADDRESS = "First Floor, Building No 1-1-726/1, Gandhi Nagar, Ashok Nagar, Hyderabad, Telangana 500080"
+INSTITUTE_CONTACT = "www.qualifyias.com  |  +91 93118 40789"
 
 
 def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 1, *,
@@ -71,53 +74,55 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
                 hx, hy = xy(cx + dx, cy + dy)
                 pdf.circle(hx, hy, 0.58 * MM, stroke=0, fill=1)
         institute_name = (institute or config["test"].get("institute", "") or "QualifyIAS").strip()
+        if layout.version >= 3:
+            from omr_exam.sheet_v3 import draw_page
+            draw_page(pdf, layout, config, logo_info,
+                      (institute or config["test"].get("institute", "") or "Qualify IAS").strip())
+            pdf.showPage()
+            continue
+        header_left = 18.0
         header_right = layout.width - 18.0
         if logo_info is not None:
             logo_reader, logo_w_px, logo_h_px = logo_info
-            box_w, box_h = 28.0, 12.0
+            box_w, box_h = 40.0, 17.0
             scale = min(box_w / max(1.0, logo_w_px), box_h / max(1.0, logo_h_px))
             drawn_w = logo_w_px * scale
             drawn_h = logo_h_px * scale
-            # Align cleanly within y_top=9.0..21.0 so the logo lines up with the title block and stays
-            # well clear of the top-right registration square (x=198..206) and NAME/CLASS boxes (y>=23.5).
-            box_top = 9.0 + (box_h - drawn_h) / 2.0
-            px, py = xy(header_right - drawn_w, box_top + drawn_h)
+            # Top-left, clear of the corner squares (x<12) and the NAME/CLASS boxes (y>=23.5).
+            px, py = xy(header_left, 5.5 + drawn_h)
             pdf.drawImage(logo_reader, px, py, drawn_w * MM, drawn_h * MM)
-            header_right -= drawn_w + 4.0
+            header_left += drawn_w + 5.0
         else:
-            # Vector wordmark keeps the requested institute identity visible before
-            # a custom image logo is added in Settings.
-            wordmark_x = header_right - 31.0
-            cx, cy = xy(wordmark_x + 3.2, 14.4)
+            cx, cy = xy(header_left + 3.2, 14.4)
             pdf.setStrokeColor(ACCENT); pdf.setLineWidth(1.1); pdf.circle(cx, cy, 2.8 * MM, stroke=1, fill=0)
             pdf.setFillColor(ACCENT); pdf.setFont("Helvetica-Bold", 7)
             pdf.drawCentredString(cx, cy - 2.3, "Q")
-            tx, ty = xy(wordmark_x + 7.0, 15.8)
+            tx, ty = xy(header_left + 7.0, 15.8)
             pdf.setFillColor(ACCENT); pdf.setFont("Helvetica-Bold", 7.4)
             pdf.drawString(tx, ty, "QualifyIAS")
-            header_right -= 34.0
-        available = (header_right - 18.0) * MM
+            header_left += 36.0
+        available = (header_right - header_left) * MM
 
         def header_line(value: str, y: float, size: float, font: str) -> None:
             while size > 6 and pdf.stringWidth(value, font, size) > available:
                 size -= 0.5
             while len(value) > 4 and pdf.stringWidth(value, font, size) > available:
                 value = value[:-2].rstrip() + "…"
-            px, py = xy(18, y)
+            px, py = xy(header_left, y)
             pdf.setFillColor(black)
             pdf.setFont(font, size)
             pdf.drawString(px, py, value)
 
-        px, py = xy(18, 14)
+        px, py = xy(header_left, 13)
         pdf.setFillColor(ACCENT)
         title_size = 16.0
         while title_size > 10 and pdf.stringWidth("OMR ANSWER SHEET", "Helvetica-Bold", title_size) > available:
             title_size -= 0.5
         pdf.setFont("Helvetica-Bold", title_size)
         pdf.drawString(px, py, "OMR ANSWER SHEET")
-        details = [institute_name, config["test"]["title"], config["test"]["class"],
-                   ", ".join(config["test"]["subjects"]), config["test"]["date"]]
-        header_line("  |  ".join(details), 19.5, 7.5, "Helvetica")
+        header_line(config["test"]["title"], 18.2, 8.5, "Helvetica-Bold")
+        header_line("  |  ".join(d for d in (institute_name, config["test"]["class"], ", ".join(config["test"]["subjects"]),
+                                             config["test"]["date"]) if d), 21.4, 6.8, "Helvetica")
 
         # Handwritten identity areas are deliberately not interpreted by the reader.
         for field, x, y in layout.identity_labels:
@@ -213,7 +218,15 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
             x, y = xy(bubble.x, bubble.y)
             pdf.setFillColor(white)
             pdf.circle(x, y, 1.55 * MM, stroke=1, fill=1)
-        text("Print at 100% scale. Do not crop or resize this sheet.", 18, layout.height - 6.0, 5.5)
+        pdf.setStrokeColor(ACCENT); pdf.setLineWidth(0.5)
+        lx0, ly = xy(18, layout.height - 12.2); lx1, _ = xy(layout.width - 18, 0)
+        pdf.line(lx0, ly, lx1, ly)
+        pdf.setFillColor(ACCENT); pdf.setFont("Helvetica-Bold", 5.6)
+        pdf.drawCentredString(layout.width / 2 * MM, xy(0, layout.height - 9.4)[1], INSTITUTE_ADDRESS)
+        pdf.setFillColor(black); pdf.setFont("Helvetica", 5.2)
+        pdf.drawCentredString(layout.width / 2 * MM, xy(0, layout.height - 6.4)[1], INSTITUTE_CONTACT)
+        pdf.setFont("Helvetica", 4.6)
+        pdf.drawCentredString(layout.width / 2 * MM, xy(0, layout.height - 3.6)[1], "Print at 100% scale. Do not crop or resize this sheet.")
         pdf.showPage()
     pdf.save()
     return path

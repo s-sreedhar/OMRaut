@@ -33,15 +33,13 @@ def test_test_builder_customizes_printed_name_and_class_fields():
     base = {"title": "Field test", "test_date": "2026-11-10", "class_name": "10A", "subject": "Math",
             "question_count": 4, "options": ["A", "B", "C", "D"], "roll_number_digits": 4,
             "set_codes": ["A"], "columns": 1}
-    for fields, expected in (([], set()), (["name"], {"NAME"}), (["class"], {"CLASS"}),
-                             (["name", "class"], {"NAME", "CLASS"})):
+    for fields, expected in (([], set()), (["name"], {"NAME"}), (["class"], set()),
+                             (["name", "class"], {"NAME"})):   # CLASS is no longer printed (QualifyIAS format)
         config = create_test_config(**base, fields=fields)
         validate_config(config)
         identity_labels = create_layout(config).identity_labels
         rendered_fields = {name for name, _x, _y in identity_labels}
         assert rendered_fields - {"ROLL NUMBER", "SET"} == expected
-        if fields == ["class"]:
-            assert next(x for name, x, _y in identity_labels if name == "CLASS") == 18.0
 
 
 def test_test_builder_rejects_invalid_column_geometry_before_returning_config():
@@ -916,3 +914,33 @@ def test_save_student_roll_rename_and_precomputed_reports(tmp_path):
     assert item_analysis(config, records, rows=computed) == item_analysis(config, records)
     assert distractor_analysis(config, records, rows=computed) == distractor_analysis(config, records)
     assert subject_summary(config, records, rows=computed) == subject_summary(config, records)
+
+
+def test_export_results_and_answer_keys_json(tmp_path):
+    from omr_exam.answer_keys import export_answer_keys_json
+    from omr_exam.reports import EXPORTS, export_function, export_json
+
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    records = _sample_records(config)
+
+    assert "json" in EXPORTS
+    assert export_function("json") is export_json
+
+    results_path = export_json(config, records, tmp_path / "results.json")
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    assert payload["format"] == "omr-results-v1"
+    assert payload["test"]["title"] == config["test"]["title"]
+    assert len(payload["results"]) == len(records)
+    assert payload["results"][0]["roll_number"] == "000001"
+    assert payload["results"][0]["answers"]["1"] == "B"
+    assert len(payload["item_analysis"]) == len(config["questions"])
+
+    unresolved = [{**records[0], "review_required": True}]
+    with pytest.raises(ValueError, match="unresolved"):
+        export_json(config, unresolved, tmp_path / "blocked.json")
+
+    keys_path = export_answer_keys_json(config, tmp_path / "answer-keys.json")
+    keys_payload = json.loads(keys_path.read_text(encoding="utf-8"))
+    assert keys_payload["format"] == "omr-answer-keys-v1"
+    assert keys_payload["test_title"] == config["test"]["title"]
+    assert keys_payload["sets"]["A"] == config["sets"]["A"]["answer_key"]

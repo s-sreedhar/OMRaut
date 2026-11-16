@@ -69,3 +69,17 @@ def test_long_text_logo_and_field_variants_do_not_overlap(tmp_path):
             path = generate_sheet_pdf(config, tmp_path / "b.pdf", institute="A Very Long Institute Name Pvt Ltd",
                                       logo=logo if use_logo else None)
             assert _problems(path) == [], (fields, use_logo)
+
+
+def test_qualifyias_format_header_footer_and_fields(tmp_path):
+    config = build_from_template(TEMPLATES[7], title="FLT 1", class_name="UPSC", subjects=["GS"])
+    path = generate_sheet_pdf(config, tmp_path / "q.pdf")
+    text = fitz.open(str(path))[0].get_text()
+    for expected in ("Gandhi Nagar", "Hyderabad, Telangana 500080", "QUALIFY IAS", "SUBJECT CODE",
+                     "BOOKLET CODE", "ROLL NUMBER", "SIGNATURE OF INVIGILATOR"):
+        assert expected in text
+    assert "CLASS" not in text
+    page = fitz.open(str(path))[0]
+    assert page.rect.width == pytest.approx(595.28, abs=0.5) and page.rect.height == pytest.approx(841.89, abs=0.5)
+    assert len([b for b in __import__("omr_exam.layout", fromlist=["x"]).create_layout(config).bubbles
+                if b.group == "subject"]) == 20

@@ -216,6 +216,8 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         decoded[group] = selected[0] if len(selected) == 1 else None
         kind = group.split(":", 1)[0]
         index = group.split(":", 1)[1]
+        if kind == "subject":            # optional printed field; never blocks scoring or review
+            continue
         weak_values = [key for key, _ in weak]
         if len(selected) > 1:
             flags.append({"kind": "multiple", "group": kind, "question": index,

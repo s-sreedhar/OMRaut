@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_exam import __version__, theme
-from omr_exam.answer_keys import validate_answer_key
+from omr_exam.answer_keys import export_answer_keys_json, validate_answer_key
 from omr_exam.config import load_config
 from omr_exam.database import Repository
 from omr_exam.dialogs import (AnswerKeyDialog, BatchLogDialog, BatchPickerDialog, ExportDialog, NewTestDialog,
@@ -782,10 +782,13 @@ class MainWindow(QMainWindow):
         self.export_config_button = button("Export exam file", self.export_config, "ghost", "download",
                                            "Save this test as JSON to reuse it on another computer (Ctrl+E)")
         self.export_config_button.setAccessibleName("Export exam file")
+        self.export_keys_button = button("Export answer key (JSON)", self.export_answer_keys, "ghost", "download",
+                                         "Save all sets' answer keys as JSON")
+        self.export_keys_button.setAccessibleName("Export answer key JSON")
         self.delete_test_button = button("Delete this test", self.delete_test, "danger", "trash",
                                          "Permanently remove this test and its scan results")
         self.delete_test_button.setAccessibleName("Delete this test")
-        for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button):
+        for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button, self.export_keys_button):
             dl.addWidget(action)
         dl.addStretch(1)
         dl.addWidget(divider())
@@ -798,7 +801,8 @@ class MainWindow(QMainWindow):
         QWidget.setTabOrder(self.key_button, self.sheet_button)
         QWidget.setTabOrder(self.sheet_button, self.scan_button)
         QWidget.setTabOrder(self.scan_button, self.export_config_button)
-        QWidget.setTabOrder(self.export_config_button, self.delete_test_button)
+        QWidget.setTabOrder(self.export_config_button, self.export_keys_button)
+        QWidget.setTabOrder(self.export_keys_button, self.delete_test_button)
         return page
 
     def _tests_table_clicked(self, row: int, _column: int):
@@ -901,7 +905,7 @@ class MainWindow(QMainWindow):
         if self.batch_id is None:
             self.review_page.clear_batch()
         has_test = self.config is not None
-        for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button, self.delete_test_button):
+        for action in (self.key_button, self.sheet_button, self.scan_button, self.export_config_button, self.export_keys_button, self.delete_test_button):
             action.setEnabled(has_test)
         if self.config:
             c = self.config
@@ -1086,9 +1090,24 @@ class MainWindow(QMainWindow):
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export exam file", "test-config.json", "Exam file (*.json)")
         if path:
+            if Path(path).suffix.lower() != ".json":
+                path += ".json"
             try:
                 Path(path).write_text(json.dumps(self.config, indent=2, ensure_ascii=False), encoding="utf-8")
                 self.toast("Exam file exported")
+            except Exception as exc:
+                alert(self, "Export failed", str(exc), "bad")
+
+    def export_answer_keys(self):
+        if not self.config:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export answer key (JSON)", "answer-keys.json", "JSON files (*.json)")
+        if path:
+            if Path(path).suffix.lower() != ".json":
+                path += ".json"
+            try:
+                export_answer_keys_json(self.config, path)
+                self.toast("Answer key exported as JSON")
             except Exception as exc:
                 alert(self, "Export failed", str(exc), "bad")
 
@@ -2483,7 +2502,8 @@ class MainWindow(QMainWindow):
         name = EXPORTS[kind][2]
         extension = Path(name).suffix.lower()
         filter_text = ("Excel workbook (*.xlsx)" if extension == ".xlsx" else
-                       "PDF (*.pdf)" if extension == ".pdf" else "CSV (*.csv)")
+                       "PDF (*.pdf)" if extension == ".pdf" else
+                       "JSON (*.json)" if extension == ".json" else "CSV (*.csv)")
         path, _ = QFileDialog.getSaveFileName(self, "Export results", name, filter_text)
         if not path:
             return

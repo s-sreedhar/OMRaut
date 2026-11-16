@@ -69,7 +69,7 @@ def build_from_template(template: TestTemplate, *, title: str, class_name: str,
         title=title, test_date=test_date or date.today().isoformat(), class_name=class_name, subjects=chosen_subjects,
         question_count=template.question_count, options=list(template.options),
         roll_number_digits=template.roll_number_digits, set_codes=list(template.set_codes),
-        fields=["name", "class"], columns=template.columns,
+        fields=["name"], columns=template.columns,
         sections=chosen_subjects, correct_points=template.correct_points,
         incorrect_points=template.incorrect_points, blank_points=template.blank_points,
     )

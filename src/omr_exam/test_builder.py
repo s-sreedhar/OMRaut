@@ -121,7 +121,7 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str,
     set_codes = [str(x).strip().upper() for x in set_codes] or ["A"]     # no sets = one paper
     if len(set(set_codes)) != len(set_codes) or any(not x for x in set_codes):
         raise ValueError("Enter unique test set codes, or leave sets off for a single paper")
-    fields = [str(value).strip().lower() for value in (["name", "class"] if fields is None else fields)]
+    fields = [str(value).strip().lower() for value in (["name"] if fields is None else fields)]
     if len(fields) != len(set(fields)) or any(value not in {"name", "class"} for value in fields):
         raise ValueError("Printed fields may contain name and/or class, at most once each")
     qpc = questions_per_column if questions_per_column is not None else (question_count + columns - 1) // columns
@@ -151,7 +151,7 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str,
                  "sections": section_ranges},
         "sheet": {"width_mm": width_mm, "height_mm": height_mm, "questions_per_column": qpc, "columns": columns,
                   "options": options, "roll_number_digits": roll_number_digits, "set_codes": set_codes,
-                  "fields": fields, "corner_mark_size_mm": 8, "answer_grid_version": 2},
+                  "fields": fields, "corner_mark_size_mm": 8, "answer_grid_version": 3},
         "questions": questions,
         "sets": {code: {"answer_key": {}} for code in set_codes},
         "scoring": {"correct": correct_points, "incorrect": incorrect_points, "blank": blank_points,

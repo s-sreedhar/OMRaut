@@ -2,7 +2,15 @@ $ErrorActionPreference = "Stop"
 $Workspace = Split-Path -Parent $PSScriptRoot
 Set-Location $Workspace
 
-$PythonCommand = if ($env:OMR_PYTHON) { $env:OMR_PYTHON } else { (Get-Command python -ErrorAction Stop).Source }
+$PythonCommand = if ($env:OMR_PYTHON) {
+  $env:OMR_PYTHON
+} elseif (Test-Path -LiteralPath (Join-Path $Workspace ".venv-build\Scripts\python.exe") -PathType Leaf) {
+  Join-Path $Workspace ".venv-build\Scripts\python.exe"
+} elseif (Test-Path -LiteralPath (Join-Path $Workspace ".venv\Scripts\python.exe") -PathType Leaf) {
+  Join-Path $Workspace ".venv\Scripts\python.exe"
+} else {
+  (Get-Command python -ErrorAction Stop).Source
+}
 if (-not (Test-Path -LiteralPath $PythonCommand -PathType Leaf)) { throw "OMR_PYTHON must point to a Python executable: $PythonCommand" }
 $PythonVersion = & $PythonCommand -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 if ($PythonVersion -notin @("3.11", "3.12", "3.13")) { throw "Build with Python 3.11, 3.12, or 3.13 (found $PythonVersion)." }

@@ -203,3 +203,26 @@ def write_sample_key(config: dict[str, Any], path: str | Path) -> Path:
                    "topics": {qid: "" for qid in sample}}
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def export_answer_keys_json(config: dict[str, Any], output: str | Path) -> Path:
+    """Export all sets' answer keys and question topics as JSON (`omr-answer-keys-v1`)."""
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sets_payload = {
+        str(code): validate_answer_key(config, config["sets"].get(code, {}).get("answer_key", {}), complete=False)
+        for code in config["sheet"]["set_codes"]
+    }
+    topics = {
+        str(question["id"]): str(question.get("topic") or "").strip()
+        for question in config["questions"]
+        if str(question.get("topic") or "").strip()
+    }
+    payload = {
+        "format": "omr-answer-keys-v1",
+        "test_title": config["test"]["title"],
+        "sets": sets_payload,
+        "topics": topics,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
