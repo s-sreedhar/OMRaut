@@ -286,9 +286,9 @@ def test_omr_sheet_and_exam_pdfs_embed_aligned_default_logo(tmp_path):
         assert len(rects) == 1
         r = rects[0]
         mm = 72.0 / 25.4
-        # Aligned to right content margin (192mm), inside corner square (198mm), and above NAME box (23.5mm)
-        assert 160.0 * mm <= r.x0 < r.x1 <= 192.5 * mm
-        assert 8.5 * mm <= r.y0 < r.y1 <= 21.5 * mm
+        # QualifyIAS format: logo centred at the top, clear of the corner squares and the header table (27mm)
+        assert abs((r.x0 + r.x1) / 2 - 105.0 * mm) < 1.0 * mm
+        assert 3.0 * mm <= r.y0 < r.y1 <= 22.0 * mm
     finally:
         doc.close()
 

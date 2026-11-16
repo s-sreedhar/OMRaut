@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import json
 import re
@@ -9,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
@@ -31,6 +32,7 @@ from omr_exam.reports import (EXPORTS, PDF_EXPORT_KINDS, _all_test_subjects, _st
 from omr_exam.resources import default_logo_path
 from omr_exam.review import ReviewPage
 from omr_exam.scan_job import ScanOutcome, ScanProgress, ScanWorker, process_scan_batch
+from omr_exam.layout import create_layout
 from omr_exam.sheets import generate_sheet_pdf
 from omr_exam.templates import TEMPLATES, build_from_template
 from omr_exam.updater import (UPDATE_SOURCE_URL, check_for_update, download_and_apply,
@@ -281,13 +283,17 @@ class MainWindow(QMainWindow):
                 layout.addWidget(self._nav_button(key, text, icon_name))
         layout.addStretch(1)
         layout.addWidget(self._nav_button("settings", "Settings", "settings"))
+        # Always-visible update entry point (also available under Settings > About).
+        self.sidebar_update_button = self._nav_button("updates", "Check for updates", "refresh")
+        self.sidebar_update_button.setCheckable(False)
+        self.sidebar_update_button.setToolTip("Check whether a newer version of OMRaut is available")
+        self.sidebar_update_button.clicked.disconnect()
+        self.nav_buttons.pop("updates", None)
+        self.sidebar_update_button.clicked.connect(lambda _c=False: self.check_updates())
+        layout.addWidget(self.sidebar_update_button)
         foot = QHBoxLayout()
-        foot.setContentsMargins(12, 10, 8, 0)
-        foot.setSpacing(8)
-        lock = QLabel()
-        lock.setPixmap(pixmap("lock", theme.SIDEBAR_MUTED, 14))
-        foot.addWidget(lock, 0, Qt.AlignTop)
-        foot.addWidget(label("Works offline. All data stays on this computer.", "sidebarFoot"), 1)
+        foot.setContentsMargins(12, 6, 8, 0)
+        foot.addWidget(label(f"Version {__version__}", "sidebarFoot", wrap=False))
         layout.addLayout(foot)
         return side
 
@@ -1117,6 +1123,18 @@ class MainWindow(QMainWindow):
         for code in self.config["sheet"]["set_codes"]:
             validate_answer_key(self.config, self.config["sets"][code]["answer_key"])
 
+    def _upgrade_sheet_design(self):
+        """Tests saved before the QualifyIAS format print (and scan) with the new design from now on."""
+        sheet = self.config["sheet"]
+        if int(sheet.get("answer_grid_version", 1)) >= 3:
+            return
+        candidate = copy.deepcopy(self.config)
+        candidate["sheet"]["answer_grid_version"] = 3
+        candidate["sheet"]["fields"] = [f for f in candidate["sheet"].get("fields", []) if f != "class"]
+        create_layout(candidate)               # raises if the test cannot use the new layout
+        self.repo.update_test_config(self.active_test_id, candidate)
+        self.config = candidate
+
     def make_sheets(self):
         try:
             self._require_complete_keys()
@@ -1133,6 +1151,7 @@ class MainWindow(QMainWindow):
                 if Path(path).suffix.lower() != ".pdf":
                     path += ".pdf"
                 institute, logo = self.sheet_branding()
+                self._upgrade_sheet_design()
                 saved = generate_sheet_pdf(self.config, path, institute=institute, logo=logo)
                 self.repo.set_setting(f"sheet_pdf_made_{self.active_test_id}", "1")
                 self.refresh_dashboard()
@@ -2647,7 +2666,7 @@ class MainWindow(QMainWindow):
         dl.addLayout(row)
         layout.addWidget(data)
 
-        about, al = section("About", f"OMRaut version {__version__}. Works fully offline.")
+        about, al = section("About", f"OMRaut version {__version__}.")
         row = QHBoxLayout()
         row.setSpacing(10)
         self.update_button = button("Check for updates", self.check_updates, "", "refresh",
@@ -2846,6 +2865,7 @@ class MainWindow(QMainWindow):
         manager, update = result
         self._available_update = (manager, update)
         self.update_button.setText("Update available")
+        self.sidebar_update_button.setText("  Update available")
         self.update_button.setToolTip("A new release is ready. Click to review and install it.")
         self.update_notice.set("A new OMRaut update is available. Open Settings and click ‘Update available’ when you’re ready.", "info")
         self.update_notice.show()

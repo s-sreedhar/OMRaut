@@ -59,8 +59,8 @@ def maximum_questions_per_column(height_mm: float) -> int:
 
 V3_MARGIN = 14.0
 V3_PANEL = 24.0
-V3_TABLE_TOP, V3_TABLE_BOTTOM = 27.0, 83.0
-V3_DIGIT_Y0, V3_DIGIT_PITCH = 41.8, 4.2
+V3_TABLE_TOP, V3_TABLE_BOTTOM = 27.0, 84.5
+V3_DIGIT_Y0, V3_DIGIT_PITCH = 41.8, 4.4
 V3_DIGIT_COL_PITCH = 7.4
 
 
@@ -77,10 +77,10 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
     if len(config["questions"]) > cols * qpc:
         raise ValueError(f"Sheet capacity is {cols * qpc} questions; this test has {len(config['questions'])}")
     left, right = V3_MARGIN, width - V3_MARGIN
-    start_y = 91.0
-    bottom = height - 15.0
+    start_y = 92.5
+    bottom = height - 17.0
     pitch_y = min(9.0, (bottom - start_y) / qpc)
-    if pitch_y < 4.2:
+    if pitch_y < 4.1:
         raise ValueError("Questions do not fit on the page; reduce questions per column or increase page height")
     options = list(map(str, sheet["options"]))
     col_x0 = left + V3_PANEL
@@ -140,7 +140,7 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
     }
     marker = float(sheet.get("corner_mark_size_mm", 8))
     return SheetLayout(width, height, marker, tuple(bubbles), tuple(qlabels), tuple(olabs), tuple(identity),
-                       cols, qpc, 3, name_box, 1.8, regions)
+                       cols, qpc, 3, name_box, 1.9, regions)
 
 
 def create_layout(config: dict[str, Any]) -> SheetLayout:

@@ -28,7 +28,9 @@ if ($LASTEXITCODE -ne 0 -or $AppVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Co
 $UpdateConfig = Join-Path $Workspace "config\update.json"
 $OriginalUpdateConfig = Get-Content -LiteralPath $UpdateConfig -Raw
 try {
-  $BuildUpdateConfig = @{ source_url = $env:OMR_UPDATE_SOURCE_URL } | ConvertTo-Json
+  # Default to the public GitHub release feed so every build can receive OTA updates.
+  $UpdateSourceUrl = if ($env:OMR_UPDATE_SOURCE_URL) { $env:OMR_UPDATE_SOURCE_URL } else { "https://github.com/s-sreedhar/OMRaut" }
+  $BuildUpdateConfig = @{ source_url = $UpdateSourceUrl } | ConvertTo-Json
   $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
   [System.IO.File]::WriteAllText($UpdateConfig, $BuildUpdateConfig, $Utf8NoBom)
   Get-Process -Name "OMRaut" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

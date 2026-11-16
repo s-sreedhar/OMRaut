@@ -21,6 +21,9 @@ ROW_PALE = HexColor("#FCF1F1")
 
 INSTITUTE_ADDRESS = "First Floor, Building No 1-1-726/1, Gandhi Nagar, Ashok Nagar, Hyderabad, Telangana 500080"
 INSTITUTE_CONTACT = "www.qualifyias.com  |  +91 93118 40789"
+INSTITUTE_FOUNDER = "Founder: Rajinikanth Sir (AIR 587)"
+CAPTION = ("From Aspirant", "to Administrator.")
+TAGLINE = "An Institution Built on Consistency, Direction, and Discipline in Preparation."
 
 
 def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: Any, institute_name: str) -> None:
@@ -67,6 +70,13 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
         pdf.drawImage(reader, px, py, dw * MM, dh * MM)
     else:
         label("QUALIFY IAS", page_w / 2, 15, 16, font="Helvetica-Bold", color=BRAND, align="center")
+    # Website caption either side of the logo.
+    label(CAPTION[0], left, 11.5, 10.5, font="Helvetica-BoldOblique", color=BRAND)
+    label(CAPTION[1], left, 16.3, 10.5, font="Helvetica-BoldOblique", color=BRAND)
+    ty = 9.2
+    for part in simpleSplit(TAGLINE, "Helvetica-Oblique", 6.2, 62 * MM):
+        label(part, right, ty, 6.2, font="Helvetica-Oblique", align="right")
+        ty += 3.2
     label("OMR ANSWER SHEET", page_w / 2, 24.6, 10.5, font="Helvetica-Bold", color=BRAND, align="center")
 
     # ---- Header table ---------------------------------------------------------------
@@ -190,9 +200,13 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
         pdf.circle(bx, by, radius, stroke=1, fill=1)
 
     # ---- Footer: institute name above the address -------------------------------------------
-    rule = layout.height - 13.6
+    rule = layout.height - 15.8
     line(left, rule, right, rule, 0.6, BRAND)
-    label(institute_name.upper(), page_w / 2, rule + 3.2, 7, font="Helvetica-Bold", color=BRAND, align="center")
-    label(INSTITUTE_ADDRESS, page_w / 2, rule + 6.4, 5.6, align="center")
-    label(INSTITUTE_CONTACT + "  |  Print at 100% scale. Do not crop or resize this sheet.", page_w / 2, rule + 9.4, 4.8,
-          align="center")
+    if institute_name.replace(" ", "").casefold() == "qualifyias":
+        institute_name = "Qualify IAS"
+    label(institute_name.upper(), page_w / 2, rule + 3.0, 7, font="Helvetica-Bold", color=BRAND, align="center")
+    label(INSTITUTE_FOUNDER + "  |  Telegram: t.me/RAJINIKANTHAIR587", page_w / 2, rule + 5.9, 5.4, font="Helvetica-Bold",
+          color=BRAND, align="center")
+    label(INSTITUTE_ADDRESS, page_w / 2, rule + 8.6, 5.6, align="center")
+    label("www.qualifyias.com  |  +91 93118 40789  |  Print at 100% scale. Do not crop or resize this sheet.",
+          page_w / 2, rule + 11.2, 4.8, align="center")
