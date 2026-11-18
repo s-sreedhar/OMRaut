@@ -194,8 +194,7 @@ def generate_sheet_pdf(config: dict[str, Any], output: str | Path, count: int = 
         col_width = (layout.width - 2 * margin) / columns
         pitch_y = min(9.0, (layout.height - 17.0 - 100.0) / qpc)
         for column in range(columns):
-            question_ids = [int(question["id"]) for question in config["questions"]
-                            if (int(question["id"]) - 1) // qpc == column]
+            question_ids = [qid for qid in sorted(question_centres) if (qid - 1) // qpc == column]
             if not question_ids:
                 continue
             centres = [question_centres[qid] for qid in question_ids]

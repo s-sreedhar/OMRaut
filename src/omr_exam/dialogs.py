@@ -105,6 +105,11 @@ class NewTestDialog(QDialog):
 
         self.question_count = QSpinBox(); self.question_count.setRange(1, 180)
         self.question_count.setAccessibleName("Number of questions")
+        self.question_count.setToolTip("How many questions this exam actually uses (answer key, marking and results cover only these)")
+        self.sheet_questions = QSpinBox(); self.sheet_questions.setRange(0, 180)
+        self.sheet_questions.setSpecialValueText("Same as questions")
+        self.sheet_questions.setAccessibleName("Questions printed on the sheet")
+        self.sheet_questions.setToolTip("Rows on your pre-printed OMR sheet (e.g. 160). Questions beyond the number used are ignored when reading.")
         self.options = QLineEdit()
         self.options.setPlaceholderText("e.g. A, B, C, D")
         self.options.setClearButtonEnabled(True)
@@ -159,6 +164,7 @@ class NewTestDialog(QDialog):
         self.options.textChanged.connect(self._update_column_capacity)
         self.columns.valueChanged.connect(self._update_question_capacity)
         self.question_count.valueChanged.connect(self._update_question_capacity)
+        self.sheet_questions.valueChanged.connect(self._update_question_capacity)
         for field in (self.bonus, self.dropped, self.partial, self.options):
             field.textChanged.connect(lambda _text, f=field: self._clear_invalid(f))
 
@@ -245,7 +251,8 @@ class NewTestDialog(QDialog):
         columns = QVBoxLayout(self.customize); columns.setContentsMargins(18, 16, 18, 16); columns.setSpacing(18)
         sheet_form = QFormLayout(); sheet_form.setVerticalSpacing(8); sheet_form.setHorizontalSpacing(14)
         sheet_form.addRow(_label("SHEET", "eyebrow"))
-        sheet_form.addRow("Questions", self.question_count)
+        sheet_form.addRow("Questions used in this test", self.question_count)
+        sheet_form.addRow("Questions printed on sheet", self.sheet_questions)
         sheet_form.addRow("Answer options", self.options)
         sheet_form.addRow("Question columns", self.columns)
         sheet_form.addRow("Sheet capacity", self.capacity_hint)
@@ -419,6 +426,7 @@ class NewTestDialog(QDialog):
         self.columns.setValue(template.columns)
         self._update_column_capacity()
         self.columns.setValue(template.columns)
+        self.sheet_questions.setValue(template.sheet_questions)
         self.question_count.setValue(template.question_count)
         self.use_sets.setChecked(len(template.set_codes) > 1)
         self._set_codes(list(template.set_codes))
@@ -442,7 +450,8 @@ class NewTestDialog(QDialog):
         sets = [editor.text().strip().upper() for editor, _button in self.set_editors] if self.use_sets.isChecked() else []
         self.set_codes.setText(", ".join(sets))
         self.summary.setText(
-            f"<b>{self.template.name}</b> · {self.question_count.value()} questions · "
+            f"<b>{self.template.name}</b> · {self.question_count.value()} questions"
+            f"{(' of ' + str(self.sheet_questions.value()) + ' printed') if self.sheet_questions.value() else ''} · "
             f"{', '.join(options) or 'no options'} · {(', '.join(self.selected_subjects()) or 'no subjects selected')} · "
             f"{('sets ' + ', '.join(sets)) if sets else 'one paper'} · "
             f"+{self.correct_points.value():g} correct / {self.incorrect_points.value():g} wrong")
@@ -505,11 +514,14 @@ class NewTestDialog(QDialog):
 
     def _update_question_capacity(self, _columns: int | None = None):
         max_rows = maximum_questions_per_column(297)
-        self.question_count.setMaximum(max(1, self.columns.value() * max_rows))
+        capacity = max(1, self.columns.value() * max_rows)
+        self.sheet_questions.setMaximum(capacity)
+        printed = self.sheet_questions.value()
+        self.question_count.setMaximum(max(1, min(capacity, printed) if printed else capacity))
         self.question_count.setToolTip(f"Up to {max_rows} questions per column fit on an A4 sheet.")
         if hasattr(self, "capacity_hint"):
             cap = sheet_capacity_summary(
-                question_count=self.question_count.value(),
+                question_count=self.sheet_questions.value() or self.question_count.value(),
                 options=[x.strip() for x in self.options.text().split(",") if x.strip()],
                 columns=self.columns.value(),
             )
@@ -527,6 +539,7 @@ class NewTestDialog(QDialog):
             self.template, title=self.title.text(), class_name=self.class_name.text(), subjects=selected_subjects,
             test_date=self.date.date().toString("yyyy-MM-dd"),
             question_count=self.question_count.value(),
+            sheet_questions=self.sheet_questions.value() or None,
             options=[x.strip() for x in self.options.text().split(",") if x.strip()],
             roll_number_digits=self.roll_digits.value(),
             set_codes=([editor.text().strip().upper() for editor, _button in self.set_editors] if self.use_sets.isChecked() else ["A"]),

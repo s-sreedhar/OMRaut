@@ -102,7 +102,7 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str,
                        bonus_questions: list[int] | None = None, dropped_questions: list[int] | None = None,
                        partial_credit: dict[str, float] | None = None,
                        mark_threshold: float = 0.24, faint_threshold: float = 0.02,
-                       institute: str = "") -> dict[str, Any]:
+                       institute: str = "", sheet_questions: int | None = None) -> dict[str, Any]:
     title, class_name = title.strip(), class_name.strip()
     selected_subjects = [str(value).strip() for value in (subjects if subjects is not None else [subject or ""]) if str(value).strip()]
     if not title or not class_name or not selected_subjects:
@@ -124,7 +124,11 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str,
     fields = [str(value).strip().lower() for value in (["name"] if fields is None else fields)]
     if len(fields) != len(set(fields)) or any(value not in {"name", "class"} for value in fields):
         raise ValueError("Printed fields may contain name and/or class, at most once each")
-    qpc = questions_per_column if questions_per_column is not None else (question_count + columns - 1) // columns
+    # `sheet_questions` is the fixed number of rows on the pre-printed sheet; the test may use fewer.
+    printed = int(sheet_questions) if sheet_questions else question_count
+    if printed < question_count:
+        raise ValueError(f"This test uses {question_count} questions but the printed sheet only has {printed}")
+    qpc = questions_per_column if questions_per_column is not None else (printed + columns - 1) // columns
     sections = [str(item).strip() for item in (sections or selected_subjects) if str(item).strip()] or selected_subjects
     if len(sections) > question_count:
         raise ValueError("Section count cannot exceed question count")
@@ -159,6 +163,8 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str,
                     "dropped_questions": dropped_questions or []},
         "reader": {"mark_threshold": mark_threshold, "faint_threshold": faint_threshold},
     }
+    if printed != question_count:
+        config["sheet"]["printed_questions"] = printed
     if institute.strip():
         config["test"]["institute"] = institute.strip()
     validate_config(config)

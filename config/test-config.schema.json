@@ -154,6 +154,10 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
+        "printed_questions": {
+          "type": "integer",
+          "minimum": 1
+        },
         "answer_grid_version": {
           "type": "integer",
           "minimum": 1,

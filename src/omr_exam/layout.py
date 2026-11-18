@@ -37,6 +37,12 @@ class SheetLayout:
     regions: dict[str, Any] = field(default_factory=dict, compare=False)
 
 
+def printed_question_count(config: dict[str, Any]) -> int:
+    """Questions physically printed on the sheet (may exceed the questions this test actually uses)."""
+    active = len(config["questions"])
+    return max(active, int(config["sheet"].get("printed_questions") or active))
+
+
 def maximum_columns_for_options(width_mm: float, option_count: int, *, maximum: int = 4) -> int:
     """Return the widest supported question grid that fits the option bubbles."""
     if option_count < 2 or maximum < 1:
@@ -74,8 +80,9 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
         raise ValueError("The standard sheet layout supports up to 4 question columns")
     if len(sheet["set_codes"]) > 8:
         raise ValueError("The standard sheet layout supports up to 8 test set codes")
-    if len(config["questions"]) > cols * qpc:
-        raise ValueError(f"Sheet capacity is {cols * qpc} questions; this test has {len(config['questions'])}")
+    printed = printed_question_count(config)
+    if printed > cols * qpc:
+        raise ValueError(f"Sheet capacity is {cols * qpc} questions; this sheet prints {printed}")
     left, right = V3_MARGIN, width - V3_MARGIN
     start_y = 92.5
     bottom = height - 17.0
@@ -91,8 +98,7 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
     bubbles: list[Bubble] = []
     qlabels: list[tuple[str, float, float]] = []
     olabs: list[tuple[str, float, float]] = []
-    for question in config["questions"]:
-        number = int(question["id"])
+    for number in range(1, printed + 1):
         col, row = (number - 1) // qpc, (number - 1) % qpc
         x0 = col_x0 + col * col_width
         y = start_y + row * pitch_y
@@ -156,8 +162,9 @@ def create_layout(config: dict[str, Any]) -> SheetLayout:
         raise ValueError("The standard sheet layout supports up to 4 question columns")
     if len(sheet["set_codes"]) > 8:
         raise ValueError("The standard sheet layout supports up to 8 test set codes")
-    if len(config["questions"]) > cols * qpc:
-        raise ValueError(f"Sheet capacity is {cols * qpc} questions; this test has {len(config['questions'])}")
+    printed = printed_question_count(config)
+    if printed > cols * qpc:
+        raise ValueError(f"Sheet capacity is {cols * qpc} questions; this sheet prints {printed}")
     margin = 18.0
     start_y = 100.0
     bottom = height - 17.0
@@ -177,8 +184,7 @@ def create_layout(config: dict[str, Any]) -> SheetLayout:
     bubbles: list[Bubble] = []
     qlabels: list[tuple[str, float, float]] = []
     olabs: list[tuple[str, float, float]] = []
-    for question in config["questions"]:
-        number = int(question["id"])
+    for number in range(1, printed + 1):
         col, row = (number - 1) // qpc, (number - 1) % qpc
         x0 = margin + col * col_width
         y = start_y + row * pitch_y

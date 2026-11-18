@@ -187,7 +187,12 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
     pixel_threshold = float(np.clip(otsu_cutoff + 80, 135, 230))
     strong_threshold = float(np.clip(otsu_cutoff + 20, 95, 175))
     observed: dict[str, dict[str, float]] = {}
+    active_questions = len(config["questions"])
     for bubble in layout.bubbles:
+        # The printed sheet may have more rows than this test uses; unused rows are ignored entirely
+        # (never read, flagged, or scored as blank/incorrect).
+        if bubble.group == "answer" and int(bubble.index) > active_questions:
+            continue
         group = f"{bubble.group}:{bubble.index}"
         ratio, mean, strong_ratio = _bubble_metrics(
             aligned, bubble, layout.width, layout.height, pixel_threshold, strong_threshold

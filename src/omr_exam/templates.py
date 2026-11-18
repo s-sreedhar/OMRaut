@@ -22,6 +22,7 @@ class TestTemplate:
     correct_points: float = 1
     incorrect_points: float = 0
     blank_points: float = 0
+    sheet_questions: int = 0      # fixed pre-printed sheet size; 0 = same as question_count
 
     def summary(self) -> str:
         negative = f", {self.incorrect_points:g} for wrong" if self.incorrect_points else ", no negative marking"
@@ -45,9 +46,9 @@ TEMPLATES: tuple[TestTemplate, ...] = (
                  columns=3, set_codes=("A", "B", "C", "D"), sections=("Physics", "Chemistry", "Maths"),
                  correct_points=4, incorrect_points=-1),
     TestTemplate("large160", "Large Exam (160)", "160 questions in four columns; adjust the count and marking.", 160,
-                 columns=4, set_codes=("A", "B"), correct_points=4, incorrect_points=-1),
+                 columns=4, set_codes=("A", "B"), correct_points=4, incorrect_points=-1, sheet_questions=160),
     TestTemplate("large180", "Large Exam (180)", "180 questions in four columns; compact print layout.", 180,
-                 columns=4, set_codes=("A", "B"), correct_points=4, incorrect_points=-1),
+                 columns=4, set_codes=("A", "B"), correct_points=4, incorrect_points=-1, sheet_questions=180),
     TestTemplate("custom", "Custom OMR", "Choose your question count, options, subjects, sets, and marking.", 50,
                  columns=2, set_codes=("A",)),
 )
@@ -69,7 +70,7 @@ def build_from_template(template: TestTemplate, *, title: str, class_name: str,
         title=title, test_date=test_date or date.today().isoformat(), class_name=class_name, subjects=chosen_subjects,
         question_count=template.question_count, options=list(template.options),
         roll_number_digits=template.roll_number_digits, set_codes=list(template.set_codes),
-        fields=["name"], columns=template.columns,
+        fields=["name"], columns=template.columns, sheet_questions=template.sheet_questions or None,
         sections=chosen_subjects, correct_points=template.correct_points,
         incorrect_points=template.incorrect_points, blank_points=template.blank_points,
     )

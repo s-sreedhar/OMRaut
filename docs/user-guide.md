@@ -14,7 +14,7 @@ The sidebar follows the work in order: **Home**, then **Prepare** (Tests, Studen
 
 Put your institute's name and logo on the sheets in **Settings > Institute** (both optional; the logo is a PNG or JPG, printed in black and white at the top right). A test can carry its own institute name from **New test > Customize**; the exam name is the test title. These sit in the header and never affect reading.
 
-In **Tests**, select the test and choose **Make sheet PDF**. Choose the 160- or 180-question template, or **Custom OMR** and set the count and columns to fit your exam. A4 supports up to 180 A-D questions in four columns. Print at **100% scale** and keep all four corner squares on the page. The name and class fields have block-letter guides for people; the roll number bubbles are what the reader uses.
+In **Tests**, select the test and choose **Make sheet PDF**. Choose the 160- or 180-question template, or **Custom OMR** and set the count and columns to fit your exam. A4 supports up to 180 A-D questions in four columns. If every exam uses the same pre-printed sheet (for example 160 rows), pick the 160 template and lower **Questions used in this test** to the real number; the answer key, scoring, reading and reports then cover only those questions, and extra rows on the sheet are ignored. Print at **100% scale** and keep all four corner squares on the page. The name and class fields have block-letter guides for people; the roll number bubbles are what the reader uses.
 
 ## 3. Add students (optional but recommended)
 
