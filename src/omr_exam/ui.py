@@ -2012,6 +2012,11 @@ class MainWindow(QMainWindow):
 
         self.question_performance_table = table(["Question", "Subject / topic", "Response", "Answer key", "Outcome", "Points"], 1)
         self.question_performance_table.setFrameShape(QFrame.NoFrame)
+        # ResizeToContents re-measures every row on each setItem (quadratic for 160 rows → UI freeze);
+        # widths are fitted once after filling instead.
+        _qheader = self.question_performance_table.horizontalHeader()
+        for _col in range(self.question_performance_table.columnCount()):
+            _qheader.setSectionResizeMode(_col, QHeaderView.Stretch if _col == 1 else QHeaderView.Interactive)
         self.question_performance_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.question_performance_table.setMinimumHeight(180)
         self.question_performance_table.setItemDelegateForColumn(4, PillDelegate(_outcome_tone, self.question_performance_table))
@@ -2461,15 +2466,19 @@ class MainWindow(QMainWindow):
             visible_questions.append((question, meta, section_label))
 
         self.question_performance_table.setUpdatesEnabled(False)
+        self.question_performance_table.blockSignals(True)
         try:
             self.question_performance_table.setRowCount(len(visible_questions))
             for index, (question, meta, section_label) in enumerate(visible_questions):
                 topic = " · ".join(filter(None, (section_label, str(meta.get("topic", ""))))) or "—"
                 values = (question["question"], topic, question.get("answer") or "Blank", question.get("expected") or "—",
-                          str(question.get("status", "")).capitalize(), f"{question.get('points', 0):g}")
+                          str(question.get("status", "")).capitalize(), f"{round(float(question.get('points', 0)), 2):g}")
                 for column, value in enumerate(values):
                     self.question_performance_table.setItem(index, column, _item(value, align=Qt.AlignRight if column == 5 else None))
+            for column in (0, 2, 3, 4, 5):
+                self.question_performance_table.resizeColumnToContents(column)
         finally:
+            self.question_performance_table.blockSignals(False)
             self.question_performance_table.setUpdatesEnabled(True)
 
     def open_exports(self):

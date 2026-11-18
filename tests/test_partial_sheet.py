@@ -61,3 +61,14 @@ def test_reader_ignores_unused_rows(tmp_path):
     assert result.roll_number == "111111"
     scored = score_answers(config, "A", result.answers)
     assert scored["total"] == 400
+
+
+def test_scores_are_rounded_without_float_noise():
+    config = create_test_config(title="R", test_date="2026-11-10", class_name="QA", subject="S", question_count=100,
+                                options=list("ABCD"), roll_number_digits=6, set_codes=["A"], columns=4,
+                                correct_points=2, incorrect_points=-0.66)
+    config["sets"]["A"]["answer_key"] = {str(i): "A" for i in range(1, 101)}
+    answers = {str(i): ("A" if i <= 37 else "B") for i in range(1, 101)}
+    total = score_answers(config, "A", answers)["total"]
+    assert total == round(37 * 2 - 63 * 0.66, 2) == 32.42
+    assert repr(total) == "32.42"

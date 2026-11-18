@@ -89,6 +89,13 @@ def _source_line(record: dict[str, Any]) -> str:
     return f"Uploaded file: {filename}{page_text}  |  Imported at (UTC): {imported_at}"
 
 
+def _fmt_score(value: Any) -> Any:
+    """Marks shown to people: at most two decimals, no float noise or trailing zeros."""
+    if value is None:
+        return value
+    return f"{round(float(value), 2):g}"
+
+
 def max_score(config: dict[str, Any]) -> float:
     """Highest total a student can earn: every counted question right, bonus questions worth one extra."""
     rules = config["scoring"]
@@ -113,7 +120,7 @@ def _stats(values: list[float]) -> dict[str, float | None]:
     median = ordered[n // 2] if n % 2 else (ordered[n // 2 - 1] + ordered[n // 2]) / 2
     stdev = (sum((v - mean) ** 2 for v in ordered) / n) ** 0.5
     return {"mean": round(mean, 2), "median": round(median, 2), "stdev": round(stdev, 2),
-            "high": ordered[-1], "low": ordered[0]}
+            "high": round(ordered[-1], 2), "low": round(ordered[0], 2)}
 
 
 def summary_stats(config: dict[str, Any], records: list[dict[str, Any]], pass_percent: float = 40.0,
@@ -379,9 +386,9 @@ def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], out
     for row in rows:
         filename, _page, imported_at = source_file_details(row)
         data.append([row.get("rank"), row.get("roll_number"), row.get("student_name", ""), row.get("class_name", ""),
-                     row.get("set_code"), row.get("total"), row.get("correct"), row.get("incorrect"), row.get("blank"),
+                     row.get("set_code"), _fmt_score(row.get("total")), row.get("correct"), row.get("incorrect"), row.get("blank"),
                      Paragraph(escape(filename), styles["ReportSmall"]), Paragraph(escape(imported_at), styles["ReportSmall"])])
-    table = Table(data, repeatRows=1, colWidths=[28, 50, 90, 42, 28, 42, 38, 38, 34, 145, 96])
+    table = Table(data, repeatRows=1, colWidths=[28, 50, 90, 42, 28, 48, 38, 38, 34, 139, 96])
     table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17324d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#aab5bf")), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f8")]), ("FONTSIZE", (0, 0), (-1, -1), 8), ("PADDING", (0, 0), (-1, -1), 5)]))
     summary_line = (f"Students: {stats['students']}  |  Mean: {stats['mean']} ({stats['mean_percent']}%)  |  "
                     f"Median: {stats['median']}  |  High: {stats['high']}  |  Low: {stats['low']}  |  "

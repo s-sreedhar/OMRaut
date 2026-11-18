@@ -48,6 +48,9 @@ def score_answers(config: dict[str, Any], set_code: str, answers: dict[int | str
         else:
             points, status = float(rules.get("partial_credit", {}).get(qid, rules["incorrect"])), "incorrect"
             incorrect += 1
+        points = round(points, 4)
         total += points
         rows.append({"question": int(qid), "answer": given, "expected": expected, "status": status, "points": points})
+    # Sum of decimal marks (e.g. -0.33) drifts in binary floating point; keep scores clean.
+    total = round(total, 2)
     return {"set_code": set_code, "total": total, "correct": correct, "incorrect": incorrect, "blank": blank, "questions": rows}
