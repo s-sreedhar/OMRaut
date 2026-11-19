@@ -100,7 +100,7 @@ def _smoke_test() -> int:
         workbook = Workbook()
         workbook.active.title = "Smoke"
         workbook.save(temporary_path / "smoke.xlsx")
-        application = QApplication(["OMRaut", "--smoke-test"])
+        application = QApplication.instance() or QApplication(["OMRaut", "--smoke-test"])
         apply_light_theme(application)
         window = MainWindow(str(database_path))
         window.show()
