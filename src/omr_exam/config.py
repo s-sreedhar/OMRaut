@@ -124,7 +124,7 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"Partial credit references unknown question {qid}")
     reader = config.get("reader", {})
     mark_threshold = float(reader.get("mark_threshold", 0.24))
-    faint_threshold = float(reader.get("faint_threshold", 0.02))
+    faint_threshold = float(reader.get("faint_threshold", 0.07))
     if not 0 < faint_threshold < mark_threshold < 1:
         raise ValueError("Require 0 < faint_threshold < mark_threshold < 1, including reader defaults")
     # Reject tests that satisfy the JSON contract but cannot fit the shared print/read geometry.

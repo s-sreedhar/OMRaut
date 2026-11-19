@@ -4,7 +4,8 @@ root = Path(SPECPATH)
 a = Analysis([str(root / "src" / "omr_exam" / "app.py")], pathex=[str(root / "src")],
              binaries=[], datas=[(str(root / "config" / "test-config.schema.json"), "config"),
                                  (str(root / "config" / "update.json"), "config"),
-                                 (str(root / "docs" / "logo.png"), "docs")],
+                                 (str(root / "docs" / "logo.png"), "docs"),
+                                 (str(root / "src" / "omr_exam" / "data" / "name_model.npz"), "omr_exam/data")],
              hiddenimports=["fitz", "openpyxl", "velopack"], hookspath=[], hooksconfig={}, runtime_hooks=[],
              excludes=[], noarchive=False)
 pyz = PYZ(a.pure)

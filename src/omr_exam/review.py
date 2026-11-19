@@ -34,11 +34,11 @@ FIRST_ANSWER_COLUMN = 7
 
 KIND_TEXT = {
     "multiple": "More than one mark", "faint": "Faint mark", "review": "Borderline mark", "blank": "Blank",
-    "invalid_id": "Roll number unclear", "duplicate_id": "Duplicate roll number", "unknown_id": "Not in roster",
+    "invalid_id": "Roll number unclear", "invalid_subject": "Subject code unclear", "duplicate_id": "Duplicate roll number", "unknown_id": "Not in roster",
     "invalid_set": "Set unclear", "unreadable": "Sheet unreadable", "preview_error": "Preview missing",
 }
 ANSWER_ISSUES = {"multiple", "faint", "review"}
-IDENTITY_KINDS = {"invalid_id", "duplicate_id", "unknown_id"}
+IDENTITY_KINDS = {"invalid_id", "invalid_subject", "duplicate_id", "unknown_id"}
 
 
 class _ChoiceDelegate(QStyledItemDelegate):
@@ -1357,7 +1357,13 @@ class ReviewPage(QWidget):
             kind = flag.get("kind")
             reason = str(flag.get("reason") or "")
             if kind == "review" and not any(value != flag.get("value") for value in values):
-                if "partial" in reason and "light" in reason:
+                if "cross" in reason:
+                    review_desc = (f"Read as {flag.get('value', '')}, but the bubble looks crossed, ticked or scribbled "
+                                   f"rather than filled. The student may have cancelled it. Confirm it.")
+                elif "overflow" in reason:
+                    review_desc = (f"Read as {flag.get('value', '')}, but there is ink outside the circle "
+                                   f"(over-filled or smudged). Confirm it.")
+                elif "partial" in reason and "light" in reason:
                     review_desc = f"Read as {flag.get('value', '')}, but the bubble appears half/partially and lightly filled. Confirm it."
                 elif "partial" in reason:
                     review_desc = f"Read as {flag.get('value', '')}, but the bubble appears half/partially filled. Confirm it."

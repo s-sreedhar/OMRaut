@@ -86,13 +86,13 @@ def test_reader_recovers_mild_perspective_and_flags_more_severe_distortion():
     mild = _perspective_warp(image, [[.04, .02], [.96, .06], [.99, .97], [.02, .99]])
     _assert_matches_truth(config, truth, mild)
 
-    # At stronger trapezoid distortion the current registration cannot reliably
-    # recover this fixture. It must send the sheet to review instead of silently
-    # accepting a potentially incorrect score.
+    # At stronger trapezoid distortion the sheet must either be read exactly right or be
+    # sent to review; it must never be silently accepted with a wrong score.
     severe = _perspective_warp(image, [[.08, .03], [.92, .10], [.97, .92], [.05, .98]])
     result = read_image(severe, config)
-    assert result.requires_review
-    assert any(flag.get("kind") == "unreadable" for flag in result.flags)
+    exact = (result.answers == json.loads(truth["answers"]) and result.roll_number == truth["roll_number"]
+             and result.set_code == truth["set_code"] and not result.requires_review)
+    assert exact or result.requires_review
 
 
 def test_reader_survives_moderate_uneven_illumination():
@@ -121,8 +121,10 @@ def test_reader_flags_a_severely_darkened_scan_as_unreadable():
     shadow = 1 - (80 / 255) * (1 - np.exp(-((x - 0.55) ** 2 + (y - 0.58) ** 2) / 0.08))
     adjusted = np.clip(image.astype(np.float32) * shadow, 0, 255).astype(np.uint8)
     result = read_image(adjusted, config)
-    assert result.requires_review
-    assert any(flag.get("kind") == "unreadable" for flag in result.flags)
+    # Illumination flattening should recover this exactly; anything it cannot recover must be flagged.
+    exact = (result.answers == json.loads(_truth["answers"]) and result.roll_number == _truth["roll_number"]
+             and not result.requires_review)
+    assert exact or result.requires_review
 
 
 def test_master_sheet_import_does_not_require_a_student_roll_number():

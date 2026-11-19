@@ -176,11 +176,35 @@ def _clean_ocr_name(text: str) -> str:
     return cleaned
 
 
-def recognize_name(aligned: np.ndarray, config: dict[str, Any], layout: SheetLayout) -> str:
-    """Extract candidate text from the NAME box of an aligned OMR image, or ``''``."""
+def recognize_name_detail(aligned: np.ndarray, config: dict[str, Any], layout: SheetLayout) -> tuple[str, float]:
+    """Read the NAME box. Returns ``(text, lowest_letter_confidence)``; ``("", 0.0)`` when blank or unreadable.
+
+    Uses the bundled offline block-letter classifier cell by cell; the Windows OCR engine (built for printed
+    text, poor on handwriting) is only a fallback if the model file is missing."""
     box = name_box_mm(config, layout)
     if box is None:
-        return ""
+        return "", 0.0
+    from omr_exam import nameocr
+    if nameocr._model() is not None:
+        box_x, box_y, box_w, box_h, cells = box
+        sx, sy = aligned.shape[1] / layout.width, aligned.shape[0] / layout.height
+        x1, x2 = round((box_x + 0.55) * sx), round((box_x + box_w - 0.55) * sx)
+        y1, y2 = round((box_y + 0.85) * sy), round((box_y + box_h - 0.85) * sy)
+        if x2 - x1 < 20 or y2 - y1 < 12:
+            return "", 0.0
+        strip = aligned[max(0, y1):y2, max(0, x1):x2]
+        text, confidence = nameocr.read_name(strip, cells, box_w / cells * sx, box_x * sx - x1)
+        return _clean_ocr_name(text), confidence
+    text = _windows_ocr_name(aligned, box, layout)
+    return text, (0.5 if text else 0.0)
+
+
+def recognize_name(aligned: np.ndarray, config: dict[str, Any], layout: SheetLayout) -> str:
+    """Extract candidate text from the NAME box of an aligned OMR image, or ``''``."""
+    return recognize_name_detail(aligned, config, layout)[0]
+
+
+def _windows_ocr_name(aligned: np.ndarray, box: tuple[float, float, float, float, int], layout: SheetLayout) -> str:
     prepared = _prepare_name_crop(aligned, box, layout.width, layout.height)
     if prepared is None:
         return ""

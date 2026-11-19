@@ -101,7 +101,7 @@ def create_test_config(*, title: str, test_date: str | None, class_name: str,
                        incorrect_points: float = -1, blank_points: float = 0,
                        bonus_questions: list[int] | None = None, dropped_questions: list[int] | None = None,
                        partial_credit: dict[str, float] | None = None,
-                       mark_threshold: float = 0.24, faint_threshold: float = 0.02,
+                       mark_threshold: float = 0.24, faint_threshold: float = 0.07,
                        institute: str = "", sheet_questions: int | None = None) -> dict[str, Any]:
     title, class_name = title.strip(), class_name.strip()
     selected_subjects = [str(value).strip() for value in (subjects if subjects is not None else [subject or ""]) if str(value).strip()]
