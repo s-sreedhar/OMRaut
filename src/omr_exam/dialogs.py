@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1440,7 +1441,7 @@ class ReferenceDataDialog(AppDialog):
 
 class StudentDialog(AppDialog):
     def __init__(self, parent=None, roll_number: str = "", name: str = "", class_name: str = "", editing: bool = False,
-                 classes: list[str] | None = None):
+                 classes: list[str] | None = None, email: str = ""):
         super().__init__(parent, "Edit student" if editing else "Add student",
                          "The roll number must match what students bubble on the sheet.", "user-plus", "info", width=460)
         self.original_roll_number = roll_number.strip() if editing else None
@@ -1456,12 +1457,19 @@ class StudentDialog(AppDialog):
         self.name.setAccessibleName("Student name")
         self.name.setToolTip("Student full name (required)")
 
+        self.email = QLineEdit(email)
+        self.email.setPlaceholderText("name@example.com (optional)")
+        self.email.setClearButtonEnabled(True)
+        self.email.setAccessibleName("Student email")
+        self.email.setToolTip("Optional email address")
+
         self.class_name = SuggestField(classes or [], "Class (optional)", class_name)
         self.class_name.setAccessibleName("Student class")
         self.class_name.setToolTip("Optional class or section name")
 
         form = QFormLayout(); form.setVerticalSpacing(10); form.setHorizontalSpacing(16)
-        form.addRow("Roll number", self.roll); form.addRow("Name", self.name); form.addRow("Class", self.class_name)
+        form.addRow("Roll number", self.roll); form.addRow("Name", self.name); form.addRow("Email", self.email)
+        form.addRow("Class", self.class_name)
         self.body.addLayout(form)
         self.error = _label("", "hint"); self.error.hide()
         self.error.setAccessibleName("Validation message")
@@ -1471,7 +1479,8 @@ class StudentDialog(AppDialog):
         self.roll.textChanged.connect(lambda _t: self._clear_field_error(self.roll))
         self.name.textChanged.connect(lambda _t: self._clear_field_error(self.name))
         QWidget.setTabOrder(self.roll, self.name)
-        QWidget.setTabOrder(self.name, self.class_name.edit)
+        QWidget.setTabOrder(self.name, self.email)
+        QWidget.setTabOrder(self.email, self.class_name.edit)
         (self.name if roll_number else self.roll).setFocus()
 
     def _clear_field_error(self, field: QLineEdit):
@@ -1489,10 +1498,19 @@ class StudentDialog(AppDialog):
             self.error.show()
             missing[0].setFocus()
             return
+        address = self.email.text().strip()
+        if address and not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", address):
+            theme.set_property(self.email, "invalid", "true")
+            self.error.setText(f"<span style='color:{theme.BAD}'>That email address does not look right.</span>")
+            self.error.show()
+            self.email.setFocus()
+            return
+        theme.set_property(self.email, "invalid", "false")
         self.accept()
 
-    def values(self) -> tuple[str, str, str]:
-        return self.roll.text().strip(), self.name.text().strip(), self.class_name.text().strip()
+    def values(self) -> tuple[str, str, str, str]:
+        return (self.roll.text().strip(), self.name.text().strip(), self.class_name.text().strip(),
+                self.email.text().strip())
 
 
 class BatchPickerDialog(AppDialog):

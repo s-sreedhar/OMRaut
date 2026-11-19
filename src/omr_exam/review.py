@@ -34,7 +34,7 @@ FIRST_ANSWER_COLUMN = 7
 
 KIND_TEXT = {
     "multiple": "More than one mark", "faint": "Faint mark", "review": "Borderline mark", "blank": "Blank",
-    "invalid_id": "Roll number unclear", "invalid_subject": "Subject code unclear", "duplicate_id": "Duplicate roll number", "unknown_id": "Not in roster",
+    "invalid_id": "Roll number unclear", "invalid_subject": "Set code unclear", "duplicate_id": "Duplicate roll number", "unknown_id": "Not in roster",
     "invalid_set": "Set unclear", "unreadable": "Sheet unreadable", "preview_error": "Preview missing",
 }
 ANSWER_ISSUES = {"multiple", "faint", "review"}

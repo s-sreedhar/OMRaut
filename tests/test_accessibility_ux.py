@@ -517,7 +517,7 @@ def test_test_builder_and_dialogs_accessibility_and_workflows(tmp_path: Path, mo
         assert stu_dlg.error.isHidden()
         stu_dlg.class_name.setText("10A")
         stu_dlg._attempt()
-        assert stu_dlg.values() == ("000001", "Asha Verma", "10A")
+        assert stu_dlg.values() == ("000001", "Asha Verma", "10A", "")
         stu_dlg.close()
     finally:
         window.close()

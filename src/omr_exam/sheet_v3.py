@@ -1,6 +1,6 @@
 """QualifyIAS-format page drawing (answer grid version 3).
 
-Header table (name / subject code / booklet code / roll number), left invigilator panel, red
+Header table (name / set code / booklet code / roll number), left invigilator panel, red
 bubbles and an institute footer. Every bubble position comes from ``layout`` so the reader and the
 printed page stay in step."""
 from __future__ import annotations
@@ -18,6 +18,7 @@ BRAND_LINE = HexColor("#B40000")
 BRAND_SOFT = HexColor("#C77B7B")
 BRAND_PALE = HexColor("#FBEAEA")
 ROW_PALE = HexColor("#FCF1F1")
+GLYPH = HexColor("#F6E3E3")          # pale: reads as paper, never as a pen mark
 
 INSTITUTE_ADDRESS = "First Floor, Building No 1-1-726/1, Gandhi Nagar, Ashok Nagar, Hyderabad, Telangana 500080"
 INSTITUTE_CONTACT = "www.qualifyias.com  |  +91 93118 40789"
@@ -89,7 +90,7 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
         line(x, top, x, bottom, 0.6)
     mid = lambda x, w: x + w / 2
     label("NAME / TEST DETAILS", mid(left, r["name_w"]), top + 3.1, 5.4, font="Helvetica-Bold", color=BRAND, align="center")
-    label("SUBJECT CODE", mid(r["subject_x"], r["subject_w"]), top + 3.1, 4.6, font="Helvetica-Bold", color=BRAND, align="center")
+    label("SET CODE", mid(r["subject_x"], r["subject_w"]), top + 3.1, 4.6, font="Helvetica-Bold", color=BRAND, align="center")
     if multi_set:
         label("BOOKLET CODE", mid(r["booklet_x"], r["booklet_w"]), top + 3.1, 4.2, font="Helvetica-Bold", color=BRAND, align="center")
     label("ROLL NUMBER", mid(r["roll_x"], r["roll_w"]), top + 3.1, 5.4, font="Helvetica-Bold", color=BRAND, align="center")
@@ -122,14 +123,6 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
     squares(list(r["roll_cols"]))
     if multi_set:
         squares([r["booklet_x"] + 9.0])
-    for group_x in (subject_cols, list(r["roll_cols"])):
-        for x in group_x:
-            for digit in range(10):
-                label(str(digit), x - 4.6, V3_DIGIT_Y0 + digit * V3_DIGIT_PITCH + 0.8, 4.2, color=BRAND)
-    if multi_set:
-        for b in layout.bubbles:
-            if b.group == "set":
-                label(b.value, b.x - 4.5, b.y + 0.9, 5, font="Helvetica-Bold", color=BRAND)
 
     # ---- Answer grid ------------------------------------------------------------------
     start_y, pitch, qpc = r["start_y"], r["pitch_y"], max(1, layout.questions_per_column)
@@ -149,8 +142,6 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
                 h = min(4.8, pitch * 0.62)
                 rect(x0 + 0.25, centres[q] - h / 2, col_w - 0.5, h, stroke=None, fill=ROW_PALE)
         rect(x0, box_top, col_w, c_bottom - box_top, width=0.8)
-    for option, x, y in layout.option_labels:
-        label(option, x, y, 5.6, font="Helvetica-Bold", color=BRAND, align="center")
     for text, x, y in layout.question_labels:
         label(text, x + 1.6, y, 6.2, font="Helvetica-Bold")
 
@@ -198,6 +189,12 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
     for bubble in layout.bubbles:
         bx, by = xy(bubble.x, bubble.y)
         pdf.circle(bx, by, radius, stroke=1, fill=1)
+    # The digit / letter each bubble stands for is printed inside the circle (light, so a pen mark covers it).
+    pdf.setFillColor(GLYPH)
+    pdf.setFont("Helvetica-Bold", 5.0)
+    for bubble in layout.bubbles:
+        bx, by = xy(bubble.x, bubble.y)
+        pdf.drawCentredString(bx, by - 1.75, str(bubble.value))
 
     # ---- Footer: institute name above the address -------------------------------------------
     rule = layout.height - 15.8

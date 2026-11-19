@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS tests (
  id INTEGER PRIMARY KEY, title TEXT NOT NULL, config_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS students (
- roll_number TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', class_name TEXT NOT NULL DEFAULT ''
+ roll_number TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', class_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS batches (
  id INTEGER PRIMARY KEY, test_id INTEGER NOT NULL REFERENCES tests(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, source_folder TEXT NOT NULL DEFAULT '',
@@ -85,9 +85,18 @@ def _roster_header(value: Any) -> str:
         "roll": "roll_number", "roll_no": "roll_number", "rollno": "roll_number",
         "student_id": "roll_number", "admission_no": "roll_number",
         "student_name": "name", "full_name": "name",
+        "e_mail": "email", "email_address": "email", "mail": "email",
         "class": "class_name", "classroom": "class_name",
     }
     return aliases.get(normalized, normalized)
+
+
+def _clean_email(value: Any) -> str:
+    """Trim an e-mail address and reject anything that is clearly not one (blank is allowed)."""
+    text = "" if value is None else str(value).strip()
+    if text and not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", text):
+        raise ValueError(f"'{text}' is not a valid email address")
+    return text
 
 
 def _sha256_file(path: Path) -> str:
@@ -156,6 +165,8 @@ def initialize_database(path: str | Path) -> None:
             connection.execute("UPDATE results SET uploaded_at=COALESCE(NULLIF(processed_at,''),CURRENT_TIMESTAMP) WHERE uploaded_at=''")
         if "scanned_name" not in columns:
             connection.execute("ALTER TABLE results ADD COLUMN scanned_name TEXT NOT NULL DEFAULT ''")
+        if "email" not in {row[1] for row in connection.execute("PRAGMA table_info(students)")}:
+            connection.execute("ALTER TABLE students ADD COLUMN email TEXT NOT NULL DEFAULT ''")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS results_batch_image ON results(batch_id,image_path)")
         connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -579,9 +590,9 @@ class Repository:
     def students(self) -> list[dict[str, Any]]:
         with _database_connection(self.path) as db:
             db.row_factory = sqlite3.Row
-            return [dict(row) for row in db.execute("SELECT roll_number,name,class_name FROM students ORDER BY roll_number")]
+            return [dict(row) for row in db.execute("SELECT roll_number,name,class_name,email FROM students ORDER BY roll_number")]
 
-    def save_student(self, roll_number: str, name: str, class_name: str = "",
+    def save_student(self, roll_number: str, name: str, class_name: str = "", email: str = "",
                      *, original_roll_number: str | None = None) -> None:
         roll_number = roll_number.strip()
         old_roll = (original_roll_number or "").strip()
@@ -589,18 +600,19 @@ class Repository:
             raise ValueError("Roll number is required")
         if not name.strip():
             raise ValueError("Student name is required")
+        email = _clean_email(email)
         with _database_connection(self.path) as db:
             if old_roll and old_roll != roll_number:
                 if db.execute("SELECT 1 FROM students WHERE roll_number=?", (roll_number,)).fetchone() is not None:
                     raise ValueError(f"Roll number {roll_number} already exists")
-                cursor = db.execute("UPDATE students SET roll_number=?,name=?,class_name=? WHERE roll_number=?",
-                                    (roll_number, name.strip(), class_name.strip(), old_roll))
+                cursor = db.execute("UPDATE students SET roll_number=?,name=?,class_name=?,email=? WHERE roll_number=?",
+                                    (roll_number, name.strip(), class_name.strip(), email, old_roll))
                 if cursor.rowcount == 0:
-                    db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?)",
-                               (roll_number, name.strip(), class_name.strip()))
+                    db.execute("INSERT INTO students(roll_number,name,class_name,email) VALUES (?,?,?,?)",
+                               (roll_number, name.strip(), class_name.strip(), email))
             else:
-                db.execute("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name",
-                           (roll_number, name.strip(), class_name.strip()))
+                db.execute("INSERT INTO students(roll_number,name,class_name,email) VALUES (?,?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name,email=excluded.email",
+                           (roll_number, name.strip(), class_name.strip(), email))
             self._merge_reference_values(db, "classes", [class_name])
 
     def delete_student(self, roll_number: str) -> None:
@@ -619,11 +631,12 @@ class Repository:
         with _database_connection(self.path) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute("SELECT r.* FROM results r WHERE r.batch_id=? ORDER BY r.roll_number,r.image_path", (batch_id,)).fetchall()
-            student_rows = db.execute("SELECT roll_number,name,class_name FROM students").fetchall()
+            student_rows = db.execute("SELECT roll_number,name,class_name,email FROM students").fetchall()
             results = [dict(row) for row in rows]
         students_by_roll = {str(s["roll_number"]): dict(s) for s in student_rows}
         for row in results:
             row["answers"] = json.loads(row.pop("answers_json"))
+            row["email"] = str(students_by_roll.get(str(row.get("roll_number")), {}).get("email") or "")
             row["flags"] = json.loads(row.pop("flags_json"))
             row["thresholds"] = json.loads(row.pop("thresholds_json"))
             row["marks"] = json.loads(row.pop("marks_json"))
@@ -846,6 +859,14 @@ class Repository:
                         self.restore_from(old_database)
                     raise
 
+    @staticmethod
+    def _upsert_students(db: sqlite3.Connection, rows: list[tuple[str, str, str, str]]) -> None:
+        """Insert or update roster rows; a blank email in an import never erases a stored one."""
+        db.executemany(
+            "INSERT INTO students(roll_number,name,class_name,email) VALUES (?,?,?,?) ON CONFLICT(roll_number) DO UPDATE "
+            "SET name=excluded.name,class_name=excluded.class_name,"
+            "email=CASE WHEN excluded.email<>'' THEN excluded.email ELSE students.email END", rows)
+
     def import_students_csv(self, path: str | Path) -> int:
         with Path(path).open(newline="", encoding="utf-8-sig") as handle:
             reader = csv.DictReader(handle)
@@ -864,17 +885,18 @@ class Repository:
                 roll = (row.get(fields["roll_number"]) or "").strip()
                 name = (row.get(fields["name"]) or "").strip()
                 class_name = (row.get(fields["class_name"]) or "").strip() if "class_name" in fields else ""
+                email = _clean_email((row.get(fields["email"]) or "") if "email" in fields else "")
                 if roll:
                     if roll in seen:
                         raise ValueError(f"Student CSV contains duplicate roll number {roll}")
                     seen.add(roll)
-                    rows.append((roll, name, class_name))
+                    rows.append((roll, name, class_name, email))
                 elif name or class_name:
                     raise ValueError("Student CSV row has student data but no roll_number")
         if not rows:
             raise ValueError("Student CSV did not contain any roll numbers")
         with _database_connection(self.path) as db:
-            db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+            self._upsert_students(db, rows)
         self.remember_reference_values("classes", [row[2] for row in rows])
         return len(rows)
 
@@ -898,14 +920,15 @@ class Repository:
             roll = "" if roll_value is None else str(roll_value).strip()
             name = "" if name_value is None else str(name_value).strip()
             class_name = "" if class_value is None else str(class_value).strip()
+            email = _clean_email(record.get("email", record.get("e_mail", "")))
             if not roll or not name:
                 raise ValueError(f"Student entry {index} needs roll_number and name")
             if roll in seen:
                 raise ValueError(f"Student JSON contains duplicate roll number {roll}")
             seen.add(roll)
-            rows.append((roll, name, class_name))
+            rows.append((roll, name, class_name, email))
         with _database_connection(self.path) as db:
-            db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+            self._upsert_students(db, rows)
         self.remember_reference_values("classes", [row[2] for row in rows])
         return len(rows)
 
@@ -961,15 +984,17 @@ class Repository:
                 class_value = values[fields["class_name"]] if "class_name" in fields and fields["class_name"] < len(values) else None
                 name = str(name_value).strip() if name_value is not None else ""
                 class_name = str(class_value).strip() if class_value is not None else ""
+                email_value = values[fields["email"]] if "email" in fields and fields["email"] < len(values) else None
+                email = _clean_email(email_value)
                 if roll in seen:
                     raise ValueError(f"Student workbook row {row_number} repeats roll number {roll}")
                 seen.add(roll)
-                rows.append((roll, name, class_name))
+                rows.append((roll, name, class_name, email))
         finally:
             workbook.close()
         if not rows:
             raise ValueError("Student workbook did not contain any roll numbers")
         with _database_connection(self.path) as db:
-            db.executemany("INSERT INTO students(roll_number,name,class_name) VALUES (?,?,?) ON CONFLICT(roll_number) DO UPDATE SET name=excluded.name,class_name=excluded.class_name", rows)
+            self._upsert_students(db, rows)
         self.remember_reference_values("classes", [row[2] for row in rows])
         return len(rows)

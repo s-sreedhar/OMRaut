@@ -305,6 +305,31 @@ def _darkness(aligned: np.ndarray, bubble: Bubble, width_mm: float, height_mm: f
     return m["ratio"], m["mean"]
 
 
+GLYPH_BASELINE_MAX = 0.35
+
+
+def _remove_printed_glyph_baseline(observed: dict[str, dict[str, float]], shape: dict[str, dict[str, dict[str, float]]]) -> None:
+    """Each bubble has its digit or letter printed inside it, which reads as a little "ink" even when empty.
+    That baseline is measured from the sheet itself (the low end of every bubble that carries the same
+    glyph, e.g. all the empty "C" bubbles) and taken off, so only pen marks count."""
+    samples: dict[tuple[str, str], list[float]] = {}
+    for group, values in shape.items():
+        kind = group.split(":", 1)[0]
+        for value, m in values.items():
+            samples.setdefault((kind, value), []).append(m["ratio"])
+    for group, values in shape.items():
+        kind = group.split(":", 1)[0]
+        for value, m in values.items():
+            ratios = samples[(kind, value)]
+            base = float(np.percentile(ratios, 30)) if len(ratios) >= 4 else min(ratios)
+            base = min(max(base, 0.0), GLYPH_BASELINE_MAX)
+            if base <= 0:
+                continue
+            scale = 1.0 - base
+            observed[group][value] = max(0.0, (m["ratio"] - base) / scale)
+            observed[group][f"_strong:{value}"] = max(0.0, (m["strong"] - base) / scale)
+
+
 def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_threshold: float | None = None, faint_threshold: float | None = None) -> ReadResult:
     path = str(image) if not isinstance(image, np.ndarray) else "<memory>"
     source = cv2.imread(str(image), cv2.IMREAD_COLOR) if not isinstance(image, np.ndarray) else image
@@ -320,7 +345,7 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
     # A fresh Otsu cutoff for every sheet adapts to scanner brightness and paper tone.
     # Clamp it to avoid extreme cutoffs on nearly blank or bilevel scans.
     otsu_cutoff, _ = cv2.threshold(measure, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    pixel_threshold = float(np.clip(otsu_cutoff + 80, 135, 230))
+    pixel_threshold = float(np.clip(otsu_cutoff + 80, 135, 222))
     strong_threshold = float(np.clip(otsu_cutoff + 20, 95, 175))
     observed: dict[str, dict[str, float]] = {}
     shape: dict[str, dict[str, dict[str, float]]] = {}
@@ -337,6 +362,7 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         observed[group][f"_mean:{bubble.value}"] = m["mean"]
         observed[group][f"_strong:{bubble.value}"] = m["strong"]
         shape.setdefault(group, {})[bubble.value] = m
+    _remove_printed_glyph_baseline(observed, shape)
     # Confidence cutoffs can be overridden per test. Otherwise the fixed baseline is
     # conservative and every partial, half-filled, or light mark becomes a review flag.
     threshold = float(mark_threshold if mark_threshold is not None else config.get("reader", {}).get("mark_threshold", 0.24))
@@ -411,18 +437,18 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         digits = [decoded[g] for g in subject_groups]
         expected_code = str(config.get("test", {}).get("subject_code") or "").strip()
         if all(d is None for d in digits):
-            # Entirely blank is only a problem when the test expects a subject code, or when
+            # Entirely blank is only a problem when the test expects a set code, or when
             # stray ink says somebody tried to fill it in.
             stray = any(v >= faint for g in subject_groups for k, v in observed[g].items() if not k.startswith("_"))
             if stray or expected_code:
-                flags.append({"kind": "invalid_subject", "message": "Subject code is blank or ambiguous"})
+                flags.append({"kind": "invalid_subject", "message": "Set code is blank or ambiguous"})
         elif any(d is None for d in digits):
-            flags.append({"kind": "invalid_subject", "message": "Subject code is incomplete or ambiguous"})
+            flags.append({"kind": "invalid_subject", "message": "Set code is incomplete or ambiguous"})
         else:
             subject_code = "".join(str(d) for d in digits)
             if expected_code and expected_code != subject_code:
                 flags.append({"kind": "invalid_subject",
-                              "message": f"Subject code {subject_code} does not match this test ({expected_code})"})
+                              "message": f"Set code {subject_code} does not match this test ({expected_code})"})
     scanned_name, name_confidence = recognize_name_detail(measure, config, layout)
     thresholds: dict[str, float | str] = {"pixel_intensity": pixel_threshold, "strong_intensity": strong_threshold,
                                           "mark_density": threshold, "partial_density": partial_floor,

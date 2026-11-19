@@ -1169,6 +1169,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(more)
         menu.addAction(icon("download", theme.TEXT_2, 16), "Download example roster", self.download_roster_template)
         menu.addAction(icon("file-export", theme.TEXT_2, 16), "Export roster as JSON", self.export_students_json)
+        menu.addAction(icon("file-export", theme.TEXT_2, 16), "Export roster as CSV", self.export_students_csv)
         more.setMenu(menu)
         classes_btn = button("Classes & subjects", self.manage_reference_data, "ghost", "settings",
                              "View, add, edit, or remove classes and subjects")
@@ -1185,7 +1186,7 @@ class MainWindow(QMainWindow):
         bar.setSpacing(10)
         self.student_search = QLineEdit()
         self.student_search.setObjectName("search")
-        self.student_search.setPlaceholderText("Search by roll number, name, or class")
+        self.student_search.setPlaceholderText("Search by roll number, name, email, or class")
         self.student_search.setClearButtonEnabled(True)
         self.student_search.addAction(icon("search", theme.MUTED, 16), QLineEdit.LeadingPosition)
         self.student_search.textChanged.connect(self.refresh_students)
@@ -1215,7 +1216,7 @@ class MainWindow(QMainWindow):
         self.delete_students_button.setEnabled(False)
         bar.addWidget(self.delete_students_button)
         layout.addLayout(bar)
-        self.students_table = table(["Roll number", "Name", "Class"], 1)
+        self.students_table = table(["Roll number", "Name", "Email", "Class"], 1)
         self.students_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.students_table.setColumnWidth(0, 160)
         self.students_table.cellDoubleClicked.connect(self.edit_student)
@@ -1279,7 +1280,7 @@ class MainWindow(QMainWindow):
             if class_filter and str(s.get("class_name") or "").strip().casefold() != class_filter.casefold():
                 continue
             if tokens:
-                haystack = f"{s['roll_number']} {s['name']} {s['class_name']}".casefold()
+                haystack = f"{s['roll_number']} {s['name']} {s['class_name']} {s.get('email', '')}".casefold()
                 if not all(tok in haystack for tok in tokens):
                     continue
             students.append(s)
@@ -1288,8 +1289,8 @@ class MainWindow(QMainWindow):
         try:
             self.students_table.setRowCount(len(students))
             for row, student in enumerate(students):
-                for column, key in enumerate(("roll_number", "name", "class_name")):
-                    self.students_table.setItem(row, column, _item(student[key]))
+                for column, key in enumerate(("roll_number", "name", "email", "class_name")):
+                    self.students_table.setItem(row, column, _item(student.get(key, "")))
         finally:
             self.students_table.setUpdatesEnabled(True)
         total = len(everyone)
@@ -1306,14 +1307,14 @@ class MainWindow(QMainWindow):
             self._save_student(*dialog.values())
 
     def edit_student(self, row: int, _column: int = 0):
-        roll, name, cls = (self.students_table.item(row, c).text() for c in range(3))
-        dialog = StudentDialog(self, roll, name, cls, editing=True, classes=self._known_classes())
+        roll, name, email, cls = (self.students_table.item(row, c).text() for c in range(4))
+        dialog = StudentDialog(self, roll, name, cls, editing=True, classes=self._known_classes(), email=email)
         if dialog.exec():
             self._save_student(*dialog.values(), original_roll=dialog.original_roll_number)
 
-    def _save_student(self, roll: str, name: str, cls: str, *, original_roll: str | None = None):
+    def _save_student(self, roll: str, name: str, cls: str, email: str = "", *, original_roll: str | None = None):
         try:
-            self.repo.save_student(roll, name, cls, original_roll_number=original_roll)
+            self.repo.save_student(roll, name, cls, email, original_roll_number=original_roll)
             self._after_roster_change()
             self.toast(f"Saved {name}")
         except Exception as exc:
@@ -1365,7 +1366,8 @@ class MainWindow(QMainWindow):
             if Path(path).suffix.lower() == ".json" or (not Path(path).suffix and "JSON" in selected_filter):
                 if Path(path).suffix.lower() != ".json":
                     path += ".json"
-                payload = {"students": [{"roll_number": "000001", "name": "Example Student", "class_name": "10A"}]}
+                payload = {"students": [{"roll_number": "000001", "name": "Example Student",
+                                         "email": "student@example.com", "class_name": "10A"}]}
                 with open(path, "w", encoding="utf-8") as handle:
                     json.dump(payload, handle, indent=2, ensure_ascii=False)
             else:
@@ -1373,8 +1375,8 @@ class MainWindow(QMainWindow):
                     path += ".csv"
                 with open(path, "w", newline="", encoding="utf-8-sig") as handle:
                     writer = csv.writer(handle)
-                    writer.writerow(["roll_number", "name", "class_name"])
-                    writer.writerow(["000001", "Example Student", "10A"])
+                    writer.writerow(["roll_number", "name", "email", "class_name"])
+                    writer.writerow(["000001", "Example Student", "student@example.com", "10A"])
             self.toast("Example saved. Fill it in, then choose Import roster.")
         except Exception as exc:
             alert(self, "The example could not be saved", str(exc), "bad")
@@ -1390,6 +1392,24 @@ class MainWindow(QMainWindow):
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump({"students": students}, handle, indent=2, ensure_ascii=False)
+            self.toast(f"Exported {len(students)} student{'s' if len(students) != 1 else ''}")
+        except Exception as exc:
+            alert(self, "Roster export failed", str(exc), "bad")
+
+    def export_students_csv(self):
+        students = self.repo.students()
+        if not students:
+            alert(self, "No students yet", "Add a student or import a roster first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export student roster", "students.csv", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["roll_number", "name", "email", "class_name"])
+                for s in students:
+                    writer.writerow([s["roll_number"], s["name"], s.get("email", ""), s["class_name"]])
             self.toast(f"Exported {len(students)} student{'s' if len(students) != 1 else ''}")
         except Exception as exc:
             alert(self, "Roster export failed", str(exc), "bad")

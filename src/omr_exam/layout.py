@@ -108,7 +108,7 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
             bubbles.append(Bubble("answer", str(number), option, x, y))
             if row == 0:
                 olabs.append((option, x, start_y - 2.7))
-    # Header table: [name/test details][subject code][booklet code][roll number]
+    # Header table: [name/test details][set code][booklet code][roll number]
     digits = int(sheet["roll_number_digits"])
     multi_set = len(sheet["set_codes"]) > 1
     roll_w = 6.2 + (digits - 1) * V3_DIGIT_COL_PITCH + 4.0

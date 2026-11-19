@@ -145,11 +145,11 @@ def test_subject_code_problems_are_flagged(sheet):
     m = _marked(sheet, subject="0")             # second subject digit left blank
     result = read_image(m.image, m.config)
     assert result.subject_code == ""
-    assert any("Subject code" in f.get("message", "") for f in result.flags)
+    assert any("Set code" in f.get("message", "") for f in result.flags)
     m = _marked(sheet)
     m.fill("subject", 1, "4")                    # two marks in one subject digit
     result = read_image(m.image, m.config)
-    assert any("Subject code" in f.get("message", "") for f in result.flags)
+    assert any("Set code" in f.get("message", "") for f in result.flags)
 
 
 def test_subject_code_must_match_the_test_when_configured(sheet):

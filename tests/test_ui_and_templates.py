@@ -214,8 +214,8 @@ def test_student_roster_json_import_is_validated_before_upsert(tmp_path):
     ]}), encoding="utf-8")
     assert repo.import_students_json(path) == 2
     assert repo.students() == [
-        {"roll_number": "000031", "name": "Asha", "class_name": "8A"},
-        {"roll_number": "000032", "name": "Ravi", "class_name": "8A"},
+        {"roll_number": "000031", "name": "Asha", "class_name": "8A", "email": ""},
+        {"roll_number": "000032", "name": "Ravi", "class_name": "8A", "email": ""},
     ]
     path.write_text(json.dumps({"students": [
         {"roll_number": "000033", "name": "Meena"},
