@@ -53,7 +53,7 @@ def test_reader_ignores_unused_rows(tmp_path):
                 or (b.group == "roll" and b.value == "1")
                 or (b.group == "answer" and int(b.index) > 100 and b.value == "B"))   # stray marks on unused rows
         if fill:
-            cv2.circle(image, (round(b.x * sx), round(b.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+            cv2.circle(image, (round(b.x * sx), round(b.y * sy)), round(1.7 * min(sx, sy)), 0, -1)
     result = read_image(image, config)
     assert set(result.answers) == {str(i) for i in range(1, 101)}
     assert all(v == "A" for v in result.answers.values())

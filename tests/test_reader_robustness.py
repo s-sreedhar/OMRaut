@@ -285,3 +285,48 @@ def test_heavy_blur_still_finds_orientation(sheet, rotation):
         image = cv2.rotate(image, rotation)
     result = read_image(image, m.config)
     assert result.answers == ANSWERS and result.roll_number == ROLL
+
+
+@pytest.mark.parametrize("shape", ["half", "crescent", "three_quarter", "small_dot", "light_grey", "diagonal_slash"])
+def test_every_kind_of_partial_fill_is_flagged(sheet, shape):
+    m = _marked(sheet, exclude=("12",))
+    answer = ANSWERS["12"]
+    x, y = m.centre("answer", 12, answer)
+    r = round(m.layout.bubble_radius * 0.92 * m.sx)
+    if shape == "half":
+        cv2.ellipse(m.image, (x, y), (r, r), 0, 0, 180, 30, -1, cv2.LINE_AA)
+    elif shape == "crescent":
+        cv2.circle(m.image, (x, y), r, 30, -1, cv2.LINE_AA)
+        cv2.circle(m.image, (x - r // 2, y - r // 3), round(r * 0.75), 255, -1, cv2.LINE_AA)
+    elif shape == "three_quarter":
+        cv2.ellipse(m.image, (x, y), (r, r), 0, -45, 225, 30, -1, cv2.LINE_AA)
+    elif shape == "small_dot":
+        cv2.circle(m.image, (x, y), max(2, round(r * 0.35)), 30, -1, cv2.LINE_AA)
+    elif shape == "ring_only":
+        cv2.circle(m.image, (x, y), r, 30, max(2, round(0.35 * m.sx)), cv2.LINE_AA)
+    elif shape == "light_grey":
+        cv2.circle(m.image, (x, y), r, 175, -1, cv2.LINE_AA)
+    else:
+        cv2.line(m.image, (x - r, y + r), (x + r, y - r), 30, max(3, round(0.6 * m.sx)), cv2.LINE_AA)
+    result = read_image(m.image, m.config)
+    assert _review(result, 12) or any(f["kind"] == "multiple" and f["question"] == "12" for f in result.flags), \
+        f"{shape} fill must never pass as a clean answer"
+    assert result.requires_review
+
+
+def test_properly_filled_bubble_of_every_size_stays_clean(sheet):
+    for scale in (0.9, 1.0, 1.1):
+        m = _marked(sheet, exclude=("12",))
+        m.fill("answer", 12, ANSWERS["12"], radius_mm=m.layout.bubble_radius * scale)
+        result = read_image(m.image, m.config)
+        assert result.answers["12"] == ANSWERS["12"] and not result.requires_review, (scale, result.flags[:3])
+
+
+@pytest.mark.parametrize("fx", [1.0, 0.5, 0.4])
+def test_partial_fill_flagged_at_every_resolution(sheet, fx):
+    m = _marked(sheet, exclude=("12",))
+    x, y = m.centre("answer", 12, ANSWERS["12"])
+    r = round(m.layout.bubble_radius * 0.92 * m.sx)
+    cv2.ellipse(m.image, (x, y), (r, r), 0, 90, 270, 30, -1, cv2.LINE_AA)
+    image = cv2.resize(m.image, None, fx=fx, fy=fx, interpolation=cv2.INTER_AREA) if fx != 1.0 else m.image
+    assert _review(read_image(image, m.config), 12)

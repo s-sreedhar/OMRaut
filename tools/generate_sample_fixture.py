@@ -34,7 +34,7 @@ def generate(output: Path) -> Path:
 
     draw = ImageDraw.Draw(image)
     scale_x, scale_y = image.width / layout.width, image.height / layout.height
-    radius = 1.05 * min(scale_x, scale_y)
+    radius = 1.7 * min(scale_x, scale_y)
     marked = []
     for question, answer in EXPECTED_ANSWERS.items():
         marked.append(next(bubble for bubble in layout.bubbles

@@ -296,7 +296,7 @@ def _scan_fixture(tmp_path, marks_for, set_codes=None):
         marks += [("answer", str(q["id"]), key[i]) for i, q in enumerate(config["questions"])] + list(extra)
         for group, index, value in marks:
             bubble = next(b for b in layout.bubbles if b.group == group and b.index == index and b.value == value)
-            cv2.circle(image, (round(bubble.x * sx), round(bubble.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+            cv2.circle(image, (round(bubble.x * sx), round(bubble.y * sy)), round(1.7 * min(sx, sy)), 0, -1)
         path = folder / f"scan-{number:03d}.png"
         cv2.imwrite(str(path), image)
         paths.append(path)
@@ -470,7 +470,7 @@ def test_institute_name_and_logo_print_without_disturbing_the_reader(tmp_path):
     sx, sy = branded.shape[1] / layout.width, branded.shape[0] / layout.height
     for group, index, value in [("roll", str(i), d) for i, d in enumerate("000123")] + [("set", "0", "B")]:
         bubble = next(b for b in layout.bubbles if (b.group, b.index, b.value) == (group, index, value))
-        cv2.circle(branded, (round(bubble.x * sx), round(bubble.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+        cv2.circle(branded, (round(bubble.x * sx), round(bubble.y * sy)), round(1.7 * min(sx, sy)), 0, -1)
     result = read_image(branded, config)
     assert result.roll_number == "000123" and result.set_code == "B" and not result.flags[:0]
     assert not any(flag["kind"] in ("unreadable", "invalid_id", "invalid_set") for flag in result.flags)

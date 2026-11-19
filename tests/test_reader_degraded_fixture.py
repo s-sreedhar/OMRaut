@@ -152,7 +152,7 @@ def test_master_sheet_import_rejects_wrong_set_and_ambiguous_answers():
     bubble = next(item for item in layout.bubbles
                   if item.group == "answer" and item.index == "1" and item.value == "A")
     center = round(bubble.x * sx), round(bubble.y * sy)
-    cv2.circle(ambiguous, center, round(1.05 * min(sx, sy)), (0, 0, 0), -1)
+    cv2.circle(ambiguous, center, round(1.7 * min(sx, sy)), (0, 0, 0), -1)
     with pytest.raises(ValueError, match="uncertain answer or set marks"):
         import_master_sheet(ambiguous, config, truth["set_code"])
 
@@ -167,7 +167,7 @@ def test_50_generated_scans_read_and_score_exactly_across_all_sets(tmp_path):
     config, _truth, template = _fixture()
     layout = create_layout(config)
     sx, sy = template.shape[1] / layout.width, template.shape[0] / layout.height
-    bubble_radius = round(1.05 * min(sx, sy))
+    bubble_radius = round(1.7 * min(sx, sy))
     blank = template.copy()
     for bubble in layout.bubbles:
         center = round(bubble.x * sx), round(bubble.y * sy)

@@ -237,15 +237,23 @@ def align_sheet(image: np.ndarray, config: dict[str, Any]) -> np.ndarray:
 
 
 def flatten_illumination(aligned: np.ndarray) -> np.ndarray:
-    """Divide out slowly varying paper brightness (shadows, curled pages, uneven lamps)."""
-    k = 57  # ~7 mm at 8 px/mm: larger than any bubble, so marks are removed from the estimate
-    background = cv2.morphologyEx(aligned, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
-    background = cv2.GaussianBlur(background, (0, 0), 20)
+    """Divide out slowly varying paper brightness (shadows, curled pages, uneven lamps).
+
+    The paper level is the local *median* of a 4x downscaled copy (about 10 mm window): marks cover well under
+    half of any window so they are ignored, and unlike a max/closing estimate a steep shadow gradient does not
+    bias it upward and turn shaded paper into "ink"."""
+    small = cv2.resize(aligned, (max(8, aligned.shape[1] // 4), max(8, aligned.shape[0] // 4)), interpolation=cv2.INTER_AREA)
+    background = cv2.medianBlur(small, 21)
+    background = cv2.GaussianBlur(cv2.resize(background, (aligned.shape[1], aligned.shape[0]), interpolation=cv2.INTER_LINEAR), (0, 0), 6)
     flat = aligned.astype(np.float32) * (255.0 / np.maximum(background.astype(np.float32), 60.0))
     return np.clip(flat, 0, 255).astype(np.uint8)
 
 
 FAINT_NOISE_FLOOR = 0.07
+# A properly filled bubble is dark across the whole circle (>=0.97 on real scans). Half-moons, crescents
+# and partly filled marks measure 0.55-0.90, so anything under this is sent to review.
+FULL_FILL_MIN = 0.93
+OVERFLOW_MAX = 0.25
 _ANGLES = np.linspace(0, 2 * np.pi, 48, endpoint=False)
 
 
@@ -272,7 +280,10 @@ def _bubble_metrics(aligned: np.ndarray, bubble: Bubble, width_mm: float, height
     strong = float(np.mean(samples < strong_threshold))
     # Whole interior of the bubble: a properly filled bubble is dark everywhere, a tick/cross is not.
     inner = dist <= radius_mm * 0.82
-    full = float(dark[inner].mean()) if inner.any() else ratio
+    # Judge coverage with the stricter "strong ink" level: the generous mark cutoff counts blurred or
+    # anti-aliased edges as ink, which hides half-moons at low resolution or under blur.
+    solid = crop < min(strong_threshold + 15.0, pixel_threshold)
+    full = float(solid[inner].mean()) if inner.any() else ratio
     # Ink spilling outside the outline (overfill, scribble, smudge). Skip the upper sector where the
     # printed A/B/C/D header and the neighbouring row's outline may sit.
     ang = np.arctan2(-yy, xx) * np.ones_like(dist)
@@ -368,12 +379,12 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
             sel_ratio = ratios[choice]
             sel_strong = strong_ratios.get(choice, sel_ratio)
             detail = shape[group][choice]
-            is_partial = sel_ratio < partial_floor
+            is_partial = sel_ratio < partial_floor or detail["full"] < FULL_FILL_MIN
             is_light = sel_strong < light_floor
             # Crosses, ticks and scribbles darken the centre but leave gaps in the circle;
             # overfilled or smudged marks leave ink outside the printed outline.
             is_cross = detail["arcs"] >= 2 and sel_ratio < 0.9
-            is_overflow = detail["overflow"] >= 0.3
+            is_overflow = detail["overflow"] >= OVERFLOW_MAX
             if weak or is_partial or is_light or is_cross or is_overflow:
                 reasons = [r for r, hit in (("partial", is_partial), ("light", is_light), ("cross", is_cross),
                                             ("overflow", is_overflow), ("alternate", bool(weak))) if hit]

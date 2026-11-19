@@ -81,7 +81,8 @@ def _smoke_test() -> int:
             bubble = next(item for item in layout.bubbles
                           if item.group == group and item.index == index and item.value == value)
             center = round(bubble.x * sx), round(bubble.y * sy)
-            cv2.circle(image, center, round(1.05 * min(sx, sy)), 0, -1)
+            # A properly filled bubble covers the whole circle (the reader flags partial fills).
+            cv2.circle(image, center, round(layout.bubble_radius * min(sx, sy)), 0, -1)
 
         expected_answers = {str(question["id"]): "A" for question in config["questions"]}
         for question in expected_answers:

@@ -57,7 +57,7 @@ def test_partial_half_and_light_fills_detected_and_flagged_for_review(tmp_path):
     # Full roll number 1234, with position 0 half-filled to verify roll review flagging too
     for pos, digit in enumerate("1234"):
         cx, cy = center("roll", pos, digit)
-        r = round(1.05 * min(sx, sy))
+        r = round(1.7 * min(sx, sy))
         if pos == 0:
             # Left half-filled black
             cv2.ellipse(image, (cx, cy), (r, r), 0, 90, 270, 0, -1)
@@ -65,9 +65,9 @@ def test_partial_half_and_light_fills_detected_and_flagged_for_review(tmp_path):
             cv2.circle(image, (cx, cy), r, 0, -1)
 
     # Q1: clean full solid dark fill -> confident
-    cv2.circle(image, center("answer", 1, "B"), round(1.05 * min(sx, sy)), 0, -1)
+    cv2.circle(image, center("answer", 1, "B"), round(1.7 * min(sx, sy)), 0, -1)
     # Q2: half-filled dark bubble -> detected as "C" and flagged "review" with partial reason
-    r = round(1.05 * min(sx, sy))
+    r = round(1.7 * min(sx, sy))
     cv2.ellipse(image, center("answer", 2, "C"), (r, r), 0, 90, 270, 0, -1)
     # Q3: full bubble lightly shaded (light gray 180) -> detected as "D" and flagged "review" with light reason
     cv2.circle(image, center("answer", 3, "D"), r, 180, -1)
@@ -126,9 +126,9 @@ def test_top_name_box_and_roll_scanned_together(tmp_path):
 
     for pos, digit in enumerate("004321"):
         b = next(x for x in layout.bubbles if x.group == "roll" and x.index == str(pos) and x.value == digit)
-        cv2.circle(filled, (round(b.x * sx), round(b.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+        cv2.circle(filled, (round(b.x * sx), round(b.y * sy)), round(1.7 * min(sx, sy)), 0, -1)
     q1b = next(x for x in layout.bubbles if x.group == "answer" and x.index == "1" and x.value == "B")
-    cv2.circle(filled, (round(q1b.x * sx), round(q1b.y * sy)), round(1.05 * min(sx, sy)), 0, -1)
+    cv2.circle(filled, (round(q1b.x * sx), round(q1b.y * sy)), round(1.7 * min(sx, sy)), 0, -1)
 
     res = read_image(filled, config)
     assert res.roll_number == "004321"

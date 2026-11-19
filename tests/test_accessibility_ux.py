@@ -153,7 +153,7 @@ def _build_scan_fixture(
             cv2.circle(
                 img,
                 (round(bubble.x * sx), round(bubble.y * sy)),
-                round(1.05 * min(sx, sy)),
+                round(1.7 * min(sx, sy)),
                 0,
                 -1,
             )
