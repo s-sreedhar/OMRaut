@@ -72,7 +72,7 @@ def test_partial_half_and_light_fills_detected_and_flagged_for_review(tmp_path):
     # Q3: full bubble lightly shaded (light gray 180) -> detected as "D" and flagged "review" with light reason
     cv2.circle(image, center("answer", 3, "D"), r, 180, -1)
     # Q4: small faint partial dot -> flagged "faint"
-    cv2.circle(image, center("answer", 4, "A"), round(0.42 * min(sx, sy)), 175, -1)
+    cv2.circle(image, center("answer", 4, "A"), round(1.0 * min(sx, sy)), 175, -1)
 
     result = read_image(image, config)
     assert result.requires_review

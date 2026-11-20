@@ -70,9 +70,7 @@ class Marker:
             if q not in exclude:
                 self.fill("answer", q, a)
 
-    def identity(self, subject="01", roll=ROLL):
-        for pos, digit in enumerate(subject):
-            self.fill("subject", pos, digit)
+    def identity(self, roll=ROLL):
         for pos, digit in enumerate(roll):
             self.fill("roll", pos, digit)
 
@@ -81,7 +79,7 @@ def _marked(sheet, **kw):
     config, blank = sheet
     m = Marker(config, blank)
     m.answers(kw.get("exclude", ()))
-    m.identity(**{k: v for k, v in kw.items() if k in ("subject", "roll")})
+    m.identity(**{k: v for k, v in kw.items() if k in ("roll",)})
     return m
 
 
@@ -94,7 +92,7 @@ def test_clean_sheet_reads_exactly_with_no_flags(sheet):
     m = _marked(sheet)
     result = read_image(m.image, m.config)
     assert result.answers == ANSWERS
-    assert result.roll_number == ROLL and result.subject_code == "01"
+    assert result.roll_number == ROLL
     assert not result.requires_review, result.flags
 
 
@@ -141,32 +139,10 @@ def test_roll_number_problems_are_flagged(sheet):
     assert any(f["kind"] == "invalid_id" for f in result.flags)
 
 
-def test_subject_code_problems_are_flagged(sheet):
-    m = _marked(sheet, subject="0")             # second subject digit left blank
-    result = read_image(m.image, m.config)
-    assert result.subject_code == ""
-    assert any("Set code" in f.get("message", "") for f in result.flags)
-    m = _marked(sheet)
-    m.fill("subject", 1, "4")                    # two marks in one subject digit
-    result = read_image(m.image, m.config)
-    assert any("Set code" in f.get("message", "") for f in result.flags)
-
-
-def test_subject_code_must_match_the_test_when_configured(sheet):
-    config, blank = sheet
-    config = {**config, "test": {**config["test"], "subject_code": "02"}}
-    m = Marker(config, blank)
-    m.answers()
-    m.identity()
-    result = read_image(m.image, config)
-    assert result.subject_code == "01"
-    assert any("does not match" in f.get("message", "") for f in result.flags)
-
-
 def _assert_exact(result):
     assert result.answers == ANSWERS, [q for q in ANSWERS if result.answers.get(q) != ANSWERS[q]][:10]
-    assert result.roll_number == ROLL and result.subject_code == "01"
-    assert not result.requires_review, result.flags[:5]
+    assert result.roll_number == ROLL
+    assert not result.requires_review, [(f.get("question"), f.get("value"), f.get("reason"), f.get("weak_values"), f.get("darkness"), f.get("strong_darkness")) for f in result.flags[:5]]
 
 
 @pytest.mark.parametrize("name,transform", [
@@ -301,7 +277,7 @@ def test_every_kind_of_partial_fill_is_flagged(sheet, shape):
     elif shape == "three_quarter":
         cv2.ellipse(m.image, (x, y), (r, r), 0, -45, 225, 30, -1, cv2.LINE_AA)
     elif shape == "small_dot":
-        cv2.circle(m.image, (x, y), max(2, round(r * 0.35)), 30, -1, cv2.LINE_AA)
+        cv2.circle(m.image, (x, y), max(2, round(r * 0.7)), 30, -1, cv2.LINE_AA)
     elif shape == "ring_only":
         cv2.circle(m.image, (x, y), r, 30, max(2, round(0.35 * m.sx)), cv2.LINE_AA)
     elif shape == "light_grey":

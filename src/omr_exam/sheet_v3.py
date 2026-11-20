@@ -1,11 +1,13 @@
 """QualifyIAS-format page drawing (answer grid version 3).
 
-Header table (name / set code / booklet code / roll number), left invigilator panel, red
+Header table (name / set code / roll number), left invigilator panel, red
 bubbles and an institute footer. Every bubble position comes from ``layout`` so the reader and the
 printed page stay in step."""
 from __future__ import annotations
 
 from typing import Any
+
+import numpy as np
 
 from reportlab.lib.colors import HexColor, black, white
 from reportlab.lib.utils import simpleSplit
@@ -18,12 +20,14 @@ BRAND_LINE = HexColor("#B40000")
 BRAND_SOFT = HexColor("#C77B7B")
 BRAND_PALE = HexColor("#FBEAEA")
 ROW_PALE = HexColor("#FCF1F1")
-GLYPH = HexColor("#FFD4D4")          # saturated pink, grey ~225: visible, but above the reader's ink cutoff (<=222) so it never reads as a mark
+GLYPH_SIZE = 7.0                      # digit / letter printed inside every bubble, in solid black
+GLYPH = black                         # the reader masks these exact pixels out (see ``glyph_mask``), so they never read as marks
+GLYPH_FONT = "Helvetica-Bold"
+GLYPH_DROP = GLYPH_SIZE * 0.358       # baseline offset (pt) that centres a capital / digit on the bubble centre
 
 INSTITUTE_ADDRESS = "First Floor, Building No 1-1-726/1, Gandhi Nagar, Ashok Nagar, Hyderabad, Telangana 500080"
 INSTITUTE_CONTACT = "www.qualifyias.com  |  +91 93118 40789"
 INSTITUTE_FOUNDER = "Founder: Rajinikanth Sir (AIR 587)"
-CAPTION = ("From Aspirant", "to Administrator.")
 TAGLINE = "An Institution Built on Consistency, Direction, and Discipline in Preparation."
 
 
@@ -71,9 +75,6 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
         pdf.drawImage(reader, px, py, dw * MM, dh * MM)
     else:
         label("QUALIFY IAS", page_w / 2, 15, 16, font="Helvetica-Bold", color=BRAND, align="center")
-    # Website caption either side of the logo.
-    label(CAPTION[0], left, 11.5, 10.5, font="Helvetica-BoldOblique", color=BRAND)
-    label(CAPTION[1], left, 16.3, 10.5, font="Helvetica-BoldOblique", color=BRAND)
     ty = 9.2
     for part in simpleSplit(TAGLINE, "Helvetica-Oblique", 6.2, 62 * MM):
         label(part, right, ty, 6.2, font="Helvetica-Oblique", align="right")
@@ -85,14 +86,13 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
     rect(left, top, right - left, 4.5, fill=BRAND_PALE, stroke=None)
     rect(left, top, right - left, bottom - top, width=0.9)
     line(left, top + 4.5, right, top + 4.5, 0.6)
-    multi_set = r["booklet_w"] > 0
-    for x in [r["subject_x"], *( [r["booklet_x"]] if multi_set else []), r["roll_x"]]:
+    multi_set = r["set_w"] > 0
+    for x in [*([r["set_x"]] if multi_set else []), r["roll_x"]]:
         line(x, top, x, bottom, 0.6)
     mid = lambda x, w: x + w / 2
     label("NAME / TEST DETAILS", mid(left, r["name_w"]), top + 3.1, 5.4, font="Helvetica-Bold", color=BRAND, align="center")
-    label("SET CODE", mid(r["subject_x"], r["subject_w"]), top + 3.1, 4.6, font="Helvetica-Bold", color=BRAND, align="center")
     if multi_set:
-        label("BOOKLET CODE", mid(r["booklet_x"], r["booklet_w"]), top + 3.1, 4.2, font="Helvetica-Bold", color=BRAND, align="center")
+        label("SET CODE", mid(r["set_x"], r["set_w"]), top + 3.1, 4.6, font="Helvetica-Bold", color=BRAND, align="center")
     label("ROLL NUMBER", mid(r["roll_x"], r["roll_w"]), top + 3.1, 5.4, font="Helvetica-Bold", color=BRAND, align="center")
 
     # Candidate name (hand-written, optionally read by OCR) and test details.
@@ -113,16 +113,14 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
     rect(left + 2.0, sig_top, r["name_w"] - 4.0, bottom - 2.0 - sig_top, stroke=BRAND_LINE, width=0.6)
     label("SIGNATURE OF CANDIDATE", left + 3.5, sig_top + 3.0, 4.4, font="Helvetica-Bold", color=BRAND)
 
-    # Write-in squares above the subject / booklet / roll bubbles.
+    # Write-in squares above the set / roll bubbles.
     def squares(xs: list[float]) -> None:
         for x in xs:
             rect(x - 2.75, 32.5, 5.5, 5.5, stroke=BRAND_LINE, width=0.7)
 
-    subject_cols = sorted({b.x for b in layout.bubbles if b.group == "subject"})
-    squares(subject_cols)
     squares(list(r["roll_cols"]))
     if multi_set:
-        squares([r["booklet_x"] + 9.0])
+        squares(sorted({b.x for b in layout.bubbles if b.group == "set"}))
 
     # ---- Answer grid ------------------------------------------------------------------
     start_y, pitch, qpc = r["start_y"], r["pitch_y"], max(1, layout.questions_per_column)
@@ -189,12 +187,12 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
     for bubble in layout.bubbles:
         bx, by = xy(bubble.x, bubble.y)
         pdf.circle(bx, by, radius, stroke=1, fill=1)
-    # The digit / letter each bubble stands for is printed inside the circle (light, so a pen mark covers it).
+    # The digit / letter each bubble stands for is printed inside the circle (solid black; the reader masks it out).
     pdf.setFillColor(GLYPH)
-    pdf.setFont("Helvetica-Bold", 6.0)
+    pdf.setFont(GLYPH_FONT, GLYPH_SIZE)
     for bubble in layout.bubbles:
         bx, by = xy(bubble.x, bubble.y)
-        pdf.drawCentredString(bx, by - 2.1, str(bubble.value))
+        pdf.drawCentredString(bx, by - GLYPH_DROP, str(bubble.value))
 
     # ---- Footer: institute name above the address -------------------------------------------
     rule = layout.height - 15.8
@@ -207,3 +205,37 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
     label(INSTITUTE_ADDRESS, page_w / 2, rule + 8.6, 5.6, align="center")
     label("www.qualifyias.com  |  +91 93118 40789  |  Print at 100% scale. Do not crop or resize this sheet.",
           page_w / 2, rule + 11.2, 4.8, align="center")
+
+
+_MASK_CACHE: dict[tuple[str, float], np.ndarray | None] = {}
+_MASK_BOX_MM = 6.0
+
+
+def glyph_mask(value: str, px_per_mm: float) -> np.ndarray | None:
+    """Boolean mask (square, bubble centre in the middle) of the printed glyph for ``value`` at the given
+    scale, rendered with exactly the font, size and offset used by ``draw_page``. ``None`` if unavailable."""
+    key = (str(value), round(float(px_per_mm), 2))
+    if key in _MASK_CACHE:
+        return _MASK_CACHE[key]
+    mask: np.ndarray | None = None
+    try:
+        import io
+
+        import fitz
+        from reportlab.pdfgen import canvas
+
+        box = _MASK_BOX_MM * MM
+        buffer = io.BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(box, box))
+        pdf.setFillColor(black); pdf.setFont(GLYPH_FONT, GLYPH_SIZE)
+        pdf.drawCentredString(box / 2, box / 2 - GLYPH_DROP, str(value))
+        pdf.save()
+        with fitz.open(stream=buffer.getvalue(), filetype="pdf") as document:
+            zoom = float(px_per_mm) * 25.4 / 72.0
+            pix = document[0].get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csGRAY, alpha=False)
+            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+        mask = image < 170
+    except Exception:                    # masking is an optimisation of accuracy, never a reason to fail a read
+        mask = None
+    _MASK_CACHE[key] = mask
+    return mask

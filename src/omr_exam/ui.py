@@ -755,8 +755,6 @@ class MainWindow(QMainWindow):
         split.addWidget(list_card, 1)
 
         detail, dl = card((20, 18, 20, 18), 12)
-        detail.setMinimumWidth(300)
-        detail.setMaximumWidth(400)
         dl.addWidget(label("SELECTED TEST", "eyebrow"))
         self.test_title_label = label("No test selected", "cardTitle")
         self.test_info = label("Create a test or import an exam file to get started.", "muted")
@@ -770,10 +768,13 @@ class MainWindow(QMainWindow):
         self.fact_labels: dict[str, QLabel] = {}
         for row, (key, caption) in enumerate((("questions", "Questions"), ("options", "Answer options"), ("sets", "Sets"),
                                               ("marking", "Marking"), ("date", "Test date"), ("roll", "Roll number"))):
-            self.test_facts.addWidget(label(caption, "hint", wrap=False), row, 0)
+            caption_label = label(caption, "hint", wrap=False)
             value = label("—", "strong")
+            for part in (caption_label, value):       # never let a short window squash the rows into each other
+                part.setMinimumHeight(part.fontMetrics().height() + 6)
+            self.test_facts.addWidget(caption_label, row, 0, Qt.AlignTop)
             self.fact_labels[key] = value
-            self.test_facts.addWidget(value, row, 1)
+            self.test_facts.addWidget(value, row, 1, Qt.AlignTop)
         self.test_facts.setColumnStretch(1, 1)
         dl.addLayout(self.test_facts)
         dl.addWidget(divider())
@@ -800,7 +801,16 @@ class MainWindow(QMainWindow):
         dl.addStretch(1)
         dl.addWidget(divider())
         dl.addWidget(self.delete_test_button)
-        split.addWidget(detail)
+        # The panel scrolls instead of compressing its rows when the window is short.
+        detail_scroll = QScrollArea()
+        detail_scroll.setWidgetResizable(True)
+        detail_scroll.setFrameShape(QFrame.NoFrame)
+        detail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        detail_scroll.setStyleSheet("QScrollArea { background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }")
+        detail_scroll.setMinimumWidth(320)
+        detail_scroll.setMaximumWidth(420)
+        detail_scroll.setWidget(detail)
+        split.addWidget(detail_scroll)
         layout.addLayout(split, 1)
         QWidget.setTabOrder(self.tests_search, self.tests_filter)
         QWidget.setTabOrder(self.tests_filter, self.tests_table)

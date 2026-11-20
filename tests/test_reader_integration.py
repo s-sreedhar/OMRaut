@@ -124,7 +124,7 @@ def test_faint_partial_fill_is_flagged_for_review(tmp_path):
     layout = create_layout(config)
     sx, sy = image.shape[1] / layout.width, image.shape[0] / layout.height
     faint = next(b for b in layout.bubbles if b.group == "answer" and b.index == "3" and b.value == "D")
-    cv2.circle(image, (round(faint.x * sx), round(faint.y * sy)), round(0.60 * min(sx, sy)), (195, 195, 195), -1)
+    cv2.circle(image, (round(faint.x * sx), round(faint.y * sy)), round(1.15 * min(sx, sy)), (195, 195, 195), -1)
     result = read_image(image, config)
     assert result.answers["3"] is None
     assert any(flag["kind"] == "faint" and flag.get("question") == "3" for flag in result.flags)
@@ -137,7 +137,7 @@ def test_partial_alternate_mark_is_recorded_with_a_confident_answer(tmp_path):
     selected = next(b for b in layout.bubbles if b.group == "answer" and b.index == "3" and b.value == "B")
     partial = next(b for b in layout.bubbles if b.group == "answer" and b.index == "3" and b.value == "D")
     cv2.circle(image, (round(selected.x * sx), round(selected.y * sy)), round(1.7 * min(sx, sy)), 0, -1)
-    cv2.circle(image, (round(partial.x * sx), round(partial.y * sy)), round(0.60 * min(sx, sy)), (195, 195, 195), -1)
+    cv2.circle(image, (round(partial.x * sx), round(partial.y * sy)), round(1.15 * min(sx, sy)), (195, 195, 195), -1)
     result = read_image(image, config)
     issue = next(flag for flag in result.flags if flag.get("question") == "3")
     assert result.answers["3"] == "B"

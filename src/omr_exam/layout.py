@@ -29,8 +29,8 @@ class SheetLayout:
     identity_labels: tuple[tuple[str, float, float], ...]
     question_columns: int
     questions_per_column: int
-    # Sheet design version 3 (QualifyIAS format) adds a boxed header table, a left
-    # invigilator panel and a subject-code field; `regions` carries its drawing geometry.
+    # Sheet design version 3 (QualifyIAS format) adds a boxed header table and a left
+    # invigilator panel; `regions` carries its drawing geometry.
     version: int = 2
     name_box: tuple[float, float, float, float, int] | None = None
     bubble_radius: float = 1.55
@@ -68,6 +68,8 @@ V3_PANEL = 24.0
 V3_TABLE_TOP, V3_TABLE_BOTTOM = 27.0, 84.5
 V3_DIGIT_Y0, V3_DIGIT_PITCH = 41.8, 4.4
 V3_DIGIT_COL_PITCH = 7.4
+V3_SET_ROWS = 10          # set-code bubbles per column; a second column holds codes 11-20
+MAX_SET_CODES = 2 * V3_SET_ROWS
 
 
 def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
@@ -78,8 +80,8 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
         raise ValueError("Sheet size is too small for the current printable layout (minimum 150 x 180 mm)")
     if cols > 4:
         raise ValueError("The standard sheet layout supports up to 4 question columns")
-    if len(sheet["set_codes"]) > 8:
-        raise ValueError("The standard sheet layout supports up to 8 test set codes")
+    if len(sheet["set_codes"]) > MAX_SET_CODES:
+        raise ValueError(f"The standard sheet layout supports up to {MAX_SET_CODES} test set codes")
     printed = printed_question_count(config)
     if printed > cols * qpc:
         raise ValueError(f"Sheet capacity is {cols * qpc} questions; this sheet prints {printed}")
@@ -108,22 +110,17 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
             bubbles.append(Bubble("answer", str(number), option, x, y))
             if row == 0:
                 olabs.append((option, x, start_y - 2.7))
-    # Header table: [name/test details][set code][booklet code][roll number]
+    # Header table: [name/test details][set code][roll number]
     digits = int(sheet["roll_number_digits"])
     multi_set = len(sheet["set_codes"]) > 1
     roll_w = 6.2 + (digits - 1) * V3_DIGIT_COL_PITCH + 4.0
-    subject_w = 6.2 + V3_DIGIT_COL_PITCH + 4.0
-    booklet_w = 15.0 if multi_set else 0.0
-    name_w = (right - left) - roll_w - subject_w - booklet_w
+    set_columns = -(-len(sheet["set_codes"]) // V3_SET_ROWS)
+    set_w = (6.2 + (set_columns - 1) * V3_DIGIT_COL_PITCH + 4.0) if multi_set else 0.0
+    name_w = (right - left) - roll_w - set_w
     if name_w < 60.0:
         raise ValueError("Too many roll number digits for the sheet header")
-    subject_x = left + name_w
-    booklet_x = subject_x + subject_w
-    roll_x = booklet_x + booklet_w
-    for position in range(2):
-        x = subject_x + 6.2 + position * V3_DIGIT_COL_PITCH
-        for digit in range(10):
-            bubbles.append(Bubble("subject", str(position), str(digit), x, V3_DIGIT_Y0 + digit * V3_DIGIT_PITCH))
+    set_x = left + name_w
+    roll_x = set_x + set_w
     roll_cols = []
     for position in range(digits):
         x = roll_x + 6.2 + position * V3_DIGIT_COL_PITCH
@@ -132,15 +129,16 @@ def _create_layout_v3(config: dict[str, Any]) -> SheetLayout:
             bubbles.append(Bubble("roll", str(position), str(digit), x, V3_DIGIT_Y0 + digit * V3_DIGIT_PITCH))
     if multi_set:
         for idx, code in enumerate(sheet["set_codes"]):
-            bubbles.append(Bubble("set", "0", str(code), booklet_x + 9.0, V3_DIGIT_Y0 + idx * V3_DIGIT_PITCH))
+            bubbles.append(Bubble("set", "0", str(code), set_x + 6.2 + (idx // V3_SET_ROWS) * V3_DIGIT_COL_PITCH,
+                                  V3_DIGIT_Y0 + (idx % V3_SET_ROWS) * V3_DIGIT_PITCH))
     name_box = None
     identity = [("ROLL NUMBER", roll_x, V3_TABLE_TOP)]
     if "name" in sheet.get("fields", []):
         name_box = (left + 2.0, 32.5, name_w - 4.0, 10.0, 22)
         identity.append(("NAME", left + 2.0, 38.0))
     regions = {
-        "left": left, "right": right, "name_w": name_w, "subject_x": subject_x, "subject_w": subject_w,
-        "booklet_x": booklet_x, "booklet_w": booklet_w, "roll_x": roll_x, "roll_w": roll_w,
+        "left": left, "right": right, "name_w": name_w, "set_columns": set_columns,
+        "set_x": set_x, "set_w": set_w, "roll_x": roll_x, "roll_w": roll_w,
         "roll_cols": roll_cols, "start_y": start_y, "pitch_y": pitch_y, "col_x0": col_x0,
         "col_width": col_width, "panel_x": left, "panel_w": V3_PANEL, "bottom": bottom,
     }

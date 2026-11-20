@@ -21,7 +21,7 @@ from omr_exam.answer_keys import (import_excel_key, import_master_sheet, parse_c
 from omr_exam.filedialogs import choose_folder, open_file, open_files, save_file
 from omr_exam.config import validate_config
 from omr_exam.ingest import scan_pages
-from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
+from omr_exam.layout import MAX_SET_CODES, maximum_columns_for_options, maximum_questions_per_column
 from omr_exam.templates import TEMPLATES, TestTemplate, build_from_template
 from omr_exam.test_builder import parse_partial_credit, parse_question_list, sheet_capacity_summary
 from omr_exam.theme import BAD_BG, GOOD_BG
@@ -262,7 +262,7 @@ class NewTestDialog(QDialog):
         sheet_form.addRow("Multiple test sets", self.use_sets)
         self.sets_host = QWidget()
         self.sets_layout = QVBoxLayout(self.sets_host); self.sets_layout.setContentsMargins(0, 0, 0, 0); self.sets_layout.setSpacing(6)
-        self.add_set_button = button("Add set", self.add_set, "ghost", "plus", "Add another paper set code (up to 8 sets)")
+        self.add_set_button = button("Add set", self.add_set, "ghost", "plus", "Add another paper set code (up to 20 sets)")
         sets_row = QVBoxLayout(); sets_row.setContentsMargins(0, 0, 0, 0); sets_row.setSpacing(6)
         sets_row.addWidget(self.sets_host); sets_row.addWidget(self.add_set_button, 0, Qt.AlignLeft)
         sheet_form.addRow("Set codes", sets_row)
@@ -460,7 +460,7 @@ class NewTestDialog(QDialog):
 
     def _sets_toggled(self, enabled: bool):
         if enabled and len(self.set_editors) == 1:
-            code = next((candidate for candidate in "ABCDEFGH" if candidate != self.set_editors[0][0].text().strip().upper()), "B")
+            code = next((candidate for candidate in "ABCDEFGHIJKLMNOPQRST" if candidate != self.set_editors[0][0].text().strip().upper()), "B")
             self._set_codes([self.set_editors[0][0].text(), code])
         self._update_summary()
 
@@ -488,12 +488,12 @@ class NewTestDialog(QDialog):
         self._update_summary()
 
     def add_set(self):
-        if len(self.set_editors) >= 8:
-            self.form_error.setText(f"<span style='color:{theme.BAD}'>A test can have at most 8 sets.</span>"); self.form_error.show(); return
+        if len(self.set_editors) >= MAX_SET_CODES:
+            self.form_error.setText(f"<span style='color:{theme.BAD}'>A test can have at most {MAX_SET_CODES} sets.</span>"); self.form_error.show(); return
         if not self.use_sets.isChecked():
             return
         codes = [editor.text().strip().upper() for editor, _button in self.set_editors]
-        code = next((candidate for candidate in "ABCDEFGH" if candidate not in codes), f"S{len(codes) + 1}")
+        code = next((candidate for candidate in "ABCDEFGHIJKLMNOPQRST" if candidate not in codes), f"S{len(codes) + 1}")
         self._set_codes(codes + [code])
         self.set_editors[-1][0].setFocus()
 

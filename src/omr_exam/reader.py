@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from omr_exam.layout import Bubble, create_layout
+from omr_exam.sheet_v3 import glyph_mask
 from omr_exam.ocr import recognize_name_detail
 
 
@@ -24,7 +25,6 @@ class ReadResult:
     preview_path: str = ""
     thresholds: dict[str, float | str] = field(default_factory=dict)
     student_name: str = ""
-    subject_code: str = ""
 
     @property
     def requires_review(self) -> bool:
@@ -258,7 +258,8 @@ _ANGLES = np.linspace(0, 2 * np.pi, 48, endpoint=False)
 
 
 def _bubble_metrics(aligned: np.ndarray, bubble: Bubble, width_mm: float, height_mm: float,
-                    pixel_threshold: float, strong_threshold: float, radius_mm: float = 1.9) -> dict[str, float]:
+                    pixel_threshold: float, strong_threshold: float, radius_mm: float = 1.9,
+                    glyph: np.ndarray | None = None) -> dict[str, float]:
     sx, sy = aligned.shape[1] / width_mm, aligned.shape[0] / height_mm
     cx, cy = round(bubble.x * sx), round(bubble.y * sy)
     reach = round((radius_mm + 1.3) * sx)
@@ -273,6 +274,22 @@ def _bubble_metrics(aligned: np.ndarray, bubble: Bubble, width_mm: float, height
     dark = crop < pixel_threshold
     # Core sample well inside the printed outline (selection metric).
     core = dist <= 0.95
+    if glyph is not None:
+        # The printed black digit/letter is known exactly: leave its pixels (grown a little to absorb
+        # sub-pixel misalignment and blur) out of the sample so only paper or pen ink is judged.
+        printed = np.zeros(crop.shape, dtype=bool)
+        gh, gw = glyph.shape
+        top, left = cy - gh // 2 - y1, cx - gw // 2 - x1
+        ys, xs = max(0, top), max(0, left)
+        ye, xe = min(crop.shape[0], top + gh), min(crop.shape[1], left + gw)
+        if ye > ys and xe > xs:
+            printed[ys:ye, xs:xe] = glyph[ys - top:ye - top, xs - left:xe - left]
+        grow = max(2, round(0.2 * sx)) * 2 + 1
+        printed = cv2.dilate(printed.astype(np.uint8), np.ones((grow, grow), np.uint8)).astype(bool)
+        # With the glyph removed the centre carries little paper, so sample out towards the outline.
+        usable = (dist <= 1.45) & ~printed
+        if usable.sum() >= 12:
+            core = usable
     samples = crop[core]
     if samples.size == 0:
         return empty
@@ -356,8 +373,9 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         if bubble.group == "answer" and int(bubble.index) > active_questions:
             continue
         group = f"{bubble.group}:{bubble.index}"
+        glyph = glyph_mask(bubble.value, measure.shape[1] / layout.width) if layout.version >= 3 else None
         m = _bubble_metrics(measure, bubble, layout.width, layout.height, pixel_threshold, strong_threshold,
-                            layout.bubble_radius)
+                            layout.bubble_radius, glyph)
         observed.setdefault(group, {})[bubble.value] = m["ratio"]
         observed[group][f"_mean:{bubble.value}"] = m["mean"]
         observed[group][f"_strong:{bubble.value}"] = m["strong"]
@@ -388,8 +406,6 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         kind = group.split(":", 1)[0]
         index = group.split(":", 1)[1]
         weak_values = [key for key, _ in weak]
-        if kind == "subject":            # reported through the subject-code check below
-            continue
         if len(selected) > 1:
             flags.append({"kind": "multiple", "group": kind, "question": index,
                           "values": [*selected, *weak_values], "selected_values": selected,
@@ -431,31 +447,11 @@ def read_image(image: str | Path | np.ndarray, config: dict[str, Any], *, mark_t
         set_code = decoded.get("set:0")
         if set_code is None:
             flags.append({"kind": "invalid_set", "message": "Test set is blank or ambiguous"})
-    subject_code = None
-    subject_groups = sorted(g for g in decoded if g.startswith("subject:"))
-    if subject_groups:
-        digits = [decoded[g] for g in subject_groups]
-        expected_code = str(config.get("test", {}).get("subject_code") or "").strip()
-        if all(d is None for d in digits):
-            # Entirely blank is only a problem when the test expects a set code, or when
-            # stray ink says somebody tried to fill it in.
-            stray = any(v >= faint for g in subject_groups for k, v in observed[g].items() if not k.startswith("_"))
-            if stray or expected_code:
-                flags.append({"kind": "invalid_subject", "message": "Set code is blank or ambiguous"})
-        elif any(d is None for d in digits):
-            flags.append({"kind": "invalid_subject", "message": "Set code is incomplete or ambiguous"})
-        else:
-            subject_code = "".join(str(d) for d in digits)
-            if expected_code and expected_code != subject_code:
-                flags.append({"kind": "invalid_subject",
-                              "message": f"Set code {subject_code} does not match this test ({expected_code})"})
     scanned_name, name_confidence = recognize_name_detail(measure, config, layout)
     thresholds: dict[str, float | str] = {"pixel_intensity": pixel_threshold, "strong_intensity": strong_threshold,
                                           "mark_density": threshold, "partial_density": partial_floor,
                                           "faint_density": faint}
-    if subject_code:
-        thresholds["subject_code"] = subject_code
     if scanned_name:
         thresholds["name_confidence"] = round(name_confidence, 3)
     return ReadResult(path, answers, roll, set_code, scores, flags, aligned,
-                      thresholds=thresholds, student_name=scanned_name, subject_code=subject_code or "")
+                      thresholds=thresholds, student_name=scanned_name)
