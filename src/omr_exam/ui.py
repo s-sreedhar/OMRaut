@@ -13,7 +13,7 @@ from typing import Any
 from PySide6.QtCore import QByteArray, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMenu, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter,
     QStackedWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from omr_exam import __version__, theme
 from omr_exam.answer_keys import export_answer_keys_json, validate_answer_key
 from omr_exam.config import load_config
+from omr_exam.filedialogs import choose_folder, open_file, open_files, save_file
 from omr_exam.database import Repository
 from omr_exam.dialogs import (AnswerKeyDialog, BatchLogDialog, BatchPickerDialog, ExportDialog, NewTestDialog,
                               ReferenceDataDialog, StudentDialog)
@@ -1006,9 +1007,7 @@ class MainWindow(QMainWindow):
             alert(self, "Could not create test", str(exc), "bad")
 
     def import_config(self):
-        file, _ = QFileDialog.getOpenFileName(
-            self, "Choose a test JSON file", "",
-            "Test configuration JSON (*.json);;All files (*.*)")
+        file, _ = open_file(self, "Choose a test JSON file", "Test configuration JSON (*.json);;All files (*.*)", area="imports")
         if not file:
             return
         try:
@@ -1023,7 +1022,7 @@ class MainWindow(QMainWindow):
         config = build_from_template(
             TEMPLATES[0], title="Example Test", class_name="10A", subjects=["Physics", "Chemistry"],
             question_count=10, columns=1, set_codes=["A"], institute="QualifyIAS")
-        path, _ = QFileDialog.getSaveFileName(self, "Save test JSON example", "test-config.json", "Test configuration (*.json)")
+        path, _ = save_file(self, "Save test JSON example", "test-config.json", "Test configuration (*.json)")
         if not path:
             return
         try:
@@ -1094,7 +1093,7 @@ class MainWindow(QMainWindow):
     def export_config(self):
         if not self.config:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export exam file", "test-config.json", "Exam file (*.json)")
+        path, _ = save_file(self, "Export exam file", "test-config.json", "Exam file (*.json)")
         if path:
             if Path(path).suffix.lower() != ".json":
                 path += ".json"
@@ -1107,7 +1106,7 @@ class MainWindow(QMainWindow):
     def export_answer_keys(self):
         if not self.config:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export answer key (JSON)", "answer-keys.json", "JSON files (*.json)")
+        path, _ = save_file(self, "Export answer key (JSON)", "answer-keys.json", "JSON files (*.json)")
         if path:
             if Path(path).suffix.lower() != ".json":
                 path += ".json"
@@ -1146,7 +1145,7 @@ class MainWindow(QMainWindow):
         try:
             slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(self.config.get("test", {}).get("title") or "")).strip("-")
             suggested = f"{slug}-answer-sheets.pdf" if slug else "answer-sheets.pdf"
-            path, _ = QFileDialog.getSaveFileName(self, "Save printable answer sheet", suggested, "PDF (*.pdf)")
+            path, _ = save_file(self, "Save printable answer sheet", suggested, "PDF (*.pdf)")
             if path:
                 if Path(path).suffix.lower() != ".pdf":
                     path += ".pdf"
@@ -1346,7 +1345,7 @@ class MainWindow(QMainWindow):
         self.refresh_dashboard()
 
     def import_students(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import student roster", "", "Roster files (*.csv *.xlsx *.json);;JSON (*.json);;CSV (*.csv);;Excel workbook (*.xlsx)")
+        path, _ = open_file(self, "Import student roster", "Roster files (*.csv *.xlsx *.json);;JSON (*.json);;CSV (*.csv);;Excel workbook (*.xlsx)", area="imports")
         if not path:
             return
         try:
@@ -1359,7 +1358,7 @@ class MainWindow(QMainWindow):
             alert(self, "The roster could not be imported", str(exc), "bad")
 
     def download_roster_template(self):
-        path, selected_filter = QFileDialog.getSaveFileName(self, "Save roster example", "students-template.csv", "CSV (*.csv);;JSON (*.json)")
+        path, selected_filter = save_file(self, "Save roster example", "students-template.csv", "CSV (*.csv);;JSON (*.json)")
         if not path:
             return
         try:
@@ -1386,7 +1385,7 @@ class MainWindow(QMainWindow):
         if not students:
             alert(self, "No students yet", "Add a student or import a roster first.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export student roster", "students.json", "JSON (*.json)")
+        path, _ = save_file(self, "Export student roster", "students.json", "JSON (*.json)")
         if not path:
             return
         try:
@@ -1401,7 +1400,7 @@ class MainWindow(QMainWindow):
         if not students:
             alert(self, "No students yet", "Add a student or import a roster first.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export student roster", "students.csv", "CSV (*.csv)")
+        path, _ = save_file(self, "Export student roster", "students.csv", "CSV (*.csv)")
         if not path:
             return
         try:
@@ -1678,12 +1677,12 @@ class MainWindow(QMainWindow):
             self.toast("Those files are already in the queue", "info")
 
     def scan_images(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Add scanned sheets (select as many as you like)", "", IMAGE_TYPES)
+        files, _ = open_files(self, "Add scanned sheets (select as many as you like)", IMAGE_TYPES, area="scans")
         if files:
             self.add_scan_paths(files)
 
     def choose_scan_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Add a folder of scanned sheets")
+        folder = choose_folder(self, "Add a folder of scanned sheets", area="scans")
         if not folder:
             return
         try:
@@ -2511,7 +2510,7 @@ class MainWindow(QMainWindow):
         if mode == "one":
             self.export_results(value, checked=True)
             return
-        folder = QFileDialog.getExistingDirectory(self, "Choose a folder for the exported files")
+        folder = choose_folder(self, "Choose a folder for the exported files")
         if not folder:
             return
         try:
@@ -2552,7 +2551,7 @@ class MainWindow(QMainWindow):
         filter_text = ("Excel workbook (*.xlsx)" if extension == ".xlsx" else
                        "PDF (*.pdf)" if extension == ".pdf" else
                        "JSON (*.json)" if extension == ".json" else "CSV (*.csv)")
-        path, _ = QFileDialog.getSaveFileName(self, "Export results", name, filter_text)
+        path, _ = save_file(self, "Export results", name, filter_text)
         if not path:
             return
         if Path(path).suffix.lower() != extension:
@@ -2754,7 +2753,7 @@ class MainWindow(QMainWindow):
         self.logo_remove_button.setEnabled(custom.is_file())
 
     def choose_logo(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose institute logo", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        path, _ = open_file(self, "Choose institute logo", "Images (*.png *.jpg *.jpeg *.bmp)", area="imports")
         if not path:
             return
         image = QImage(path)
@@ -2808,7 +2807,7 @@ class MainWindow(QMainWindow):
 
     def backup_data(self):
         suggested = str(self.db_path.with_name(f"omr-exam-backup-{datetime.now():%Y%m%d-%H%M%S}.omrbackup"))
-        path, _ = QFileDialog.getSaveFileName(self, "Save app backup", suggested, "OMRaut backup (*.omrbackup)")
+        path, _ = save_file(self, "Save app backup", suggested, "OMRaut backup (*.omrbackup)", area="backups")
         if not path:
             return
         try:
@@ -2821,7 +2820,7 @@ class MainWindow(QMainWindow):
     def restore_data(self):
         if self._scan_worker is not None:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Restore app backup", "", "OMRaut backup (*.omrbackup)")
+        path, _ = open_file(self, "Restore app backup", "OMRaut backup (*.omrbackup)", area="backups")
         if not path:
             return
         if not confirm(self, "Replace current data with this backup?",

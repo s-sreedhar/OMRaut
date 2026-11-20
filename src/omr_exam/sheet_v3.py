@@ -18,7 +18,7 @@ BRAND_LINE = HexColor("#B40000")
 BRAND_SOFT = HexColor("#C77B7B")
 BRAND_PALE = HexColor("#FBEAEA")
 ROW_PALE = HexColor("#FCF1F1")
-GLYPH = HexColor("#F6E3E3")          # pale: reads as paper, never as a pen mark
+GLYPH = HexColor("#FFD4D4")          # saturated pink, grey ~225: visible, but above the reader's ink cutoff (<=222) so it never reads as a mark
 
 INSTITUTE_ADDRESS = "First Floor, Building No 1-1-726/1, Gandhi Nagar, Ashok Nagar, Hyderabad, Telangana 500080"
 INSTITUTE_CONTACT = "www.qualifyias.com  |  +91 93118 40789"
@@ -191,10 +191,10 @@ def draw_page(pdf: Any, layout: SheetLayout, config: dict[str, Any], logo_info: 
         pdf.circle(bx, by, radius, stroke=1, fill=1)
     # The digit / letter each bubble stands for is printed inside the circle (light, so a pen mark covers it).
     pdf.setFillColor(GLYPH)
-    pdf.setFont("Helvetica-Bold", 5.0)
+    pdf.setFont("Helvetica-Bold", 6.0)
     for bubble in layout.bubbles:
         bx, by = xy(bubble.x, bubble.y)
-        pdf.drawCentredString(bx, by - 1.75, str(bubble.value))
+        pdf.drawCentredString(bx, by - 2.1, str(bubble.value))
 
     # ---- Footer: institute name above the address -------------------------------------------
     rule = layout.height - 15.8

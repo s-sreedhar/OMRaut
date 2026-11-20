@@ -9,7 +9,7 @@ from typing import Any
 from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QInputDialog,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFormLayout, QFrame, QInputDialog,
     QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QSpinBox,
     QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -18,6 +18,7 @@ from omr_exam import theme
 from omr_exam.icons import icon
 from omr_exam.answer_keys import (import_excel_key, import_master_sheet, parse_compact_key,
                                   parse_pasted_key, validate_answer_key, write_sample_key)
+from omr_exam.filedialogs import choose_folder, open_file, open_files, save_file
 from omr_exam.config import validate_config
 from omr_exam.ingest import scan_pages
 from omr_exam.layout import maximum_columns_for_options, maximum_questions_per_column
@@ -1096,7 +1097,7 @@ class AnswerKeyDialog(QDialog):
             alert(self, "The pasted key could not be used", str(exc), "warn")
 
     def import_excel(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select answer key workbook", "", "Excel workbook (*.xlsx)")
+        path, _ = open_file(self, "Select answer key workbook", "Excel workbook (*.xlsx)", area="imports")
         if not path:
             return
         try:
@@ -1105,7 +1106,7 @@ class AnswerKeyDialog(QDialog):
             alert(self, "The Excel key could not be imported", str(exc), "warn")
 
     def import_json_key(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import answer key file", "", "JSON files (*.json)")
+        path, _ = open_file(self, "Import answer key file", "JSON files (*.json)", area="imports")
         if not path:
             return
         try:
@@ -1148,7 +1149,7 @@ class AnswerKeyDialog(QDialog):
             alert(self, "The answer key file could not be imported", str(exc), "warn")
 
     def save_sample_key(self):
-        path, chosen = QFileDialog.getSaveFileName(
+        path, chosen = save_file(
             self, "Save a sample answer key", "answer-key-sample.json",
             "JSON file (*.json);;Excel workbook (*.xlsx);;Text, one line (*.txt)")
         if not path:
@@ -1173,7 +1174,7 @@ class AnswerKeyDialog(QDialog):
                       for row, question in enumerate(self.questions) if self.table.item(row, 1).text().strip()}
             payload = {"format": "omr-answer-keys-v1", "test_title": self.config["test"]["title"],
                        "sets": keys, "topics": topics}
-            path, _ = QFileDialog.getSaveFileName(self, "Save answer key file", "answer-keys.json", "JSON files (*.json)")
+            path, _ = save_file(self, "Save answer key file", "answer-keys.json", "JSON files (*.json)")
             if path:
                 with open(path, "w", encoding="utf-8") as handle:
                     json.dump(payload, handle, indent=2, ensure_ascii=False)
@@ -1182,7 +1183,7 @@ class AnswerKeyDialog(QDialog):
             alert(self, "The answer key could not be saved to a file", str(exc), "warn")
 
     def import_master_sheet(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select the scan of a filled-in master sheet", "", IMAGE_TYPES)
+        path, _ = open_file(self, "Select the scan of a filled-in master sheet", IMAGE_TYPES, area="scans")
         if not path:
             return
         try:
