@@ -743,7 +743,7 @@ def test_excel_workbook_includes_result_and_analysis_tabs(tmp_path):
     path = export_xlsx(config, records, tmp_path / "complete-results.xlsx")
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     assert workbook.sheetnames == ["Results", "Summary", "Class summary", "Distractors", "Item analysis", "Topic analysis", "Subject analysis", "Set comparison"]
-    assert workbook["Results"]["F2"].value == 20
+    assert workbook["Results"]["G2"].value == 20
     assert workbook["Item analysis"]["A1"].value == "Question"
     assert workbook["Topic analysis"]["A1"].value == "Section"
     assert workbook["Subject analysis"]["A1"].value == "Subject"
