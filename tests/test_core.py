@@ -367,6 +367,70 @@ def test_fifty_sheet_batch_scores_match_hand_totals_and_csv_export(tmp_path):
     assert sum(float(row["total"]) for row in exported) == 835
 
 
+def test_results_for_test_combines_all_set_batches_and_dedupes_rescans(tmp_path):
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    repository = Repository(tmp_path / "exam.sqlite3")
+    test_id = repository.save_test(config)
+
+    def scan(batch_id, roll, set_code, name):
+        key = config["sets"][set_code]["answer_key"]
+        answers = {str(q["id"]): key[str(q["id"])] for q in config["questions"]}
+        read = SimpleNamespace(roll_number=roll, set_code=set_code, answers=answers, requires_review=False,
+                               image_path=name, preview_path="", thresholds={}, marks={}, flags=[])
+        repository.store_read(batch_id, read, score_answers(config, set_code, answers))
+
+    set_a = repository.create_batch(test_id, "set A", expected_pages=2)
+    scan(set_a, "000001", "A", "a1.png"); scan(set_a, "000002", "A", "a2.png")
+    repository.finish_batch(set_a, 2)
+    set_b = repository.create_batch(test_id, "set B", expected_pages=2)
+    scan(set_b, "000003", "B", "b1.png"); scan(set_b, "000002", "B", "b2.png")  # 000002 re-scanned
+    repository.finish_batch(set_b, 2)
+
+    combined = repository.results_for_test(test_id)
+    assert [r["roll_number"] for r in combined] == ["000001", "000002", "000003"]
+    assert {r["roll_number"]: r["set_code"] for r in combined}["000002"] == "B"
+    assert repository.test_export_status(test_id) == {"batches": 2, "incomplete": 0}
+    export_csv(config, combined, tmp_path / "all.csv")
+
+
+def test_student_emails_and_sets_appear_in_every_combined_export(tmp_path):
+    import json as _json
+    import fitz
+    from omr_exam import reports
+
+    config = load_config(ROOT / "examples" / "sample-test.json")
+    repository = Repository(tmp_path / "exam.sqlite3")
+    test_id = repository.save_test(config)
+    for roll, name in (("000001", "Asha"), ("000002", "Ravi")):
+        repository.save_student(roll, name, "10A", f"{name.lower()}@example.org")
+    for index, set_code in enumerate(("A", "B"), 1):
+        batch = repository.create_batch(test_id, f"set {set_code}", expected_pages=1)
+        key = config["sets"][set_code]["answer_key"]
+        answers = {str(q["id"]): key[str(q["id"])] for q in config["questions"]}
+        read = SimpleNamespace(roll_number=f"{index:06d}", set_code=set_code, answers=answers, requires_review=False,
+                               image_path=f"{set_code}.png", preview_path="", thresholds={}, marks={}, flags=[])
+        repository.store_read(batch, read, score_answers(config, set_code, answers))
+        repository.finish_batch(batch, 1)
+    records = repository.results_for_test(test_id)
+    assert [r["email"] for r in records] == ["asha@example.org", "ravi@example.org"]
+    for kind, (_title, _hint, filename) in reports.EXPORTS.items():
+        target = tmp_path / filename
+        exporter = reports.export_function(kind)
+        exporter(config, records, target, logo=None) if kind in reports.PDF_EXPORT_KINDS else exporter(config, records, target)
+        if kind in {"csv", "json"}:
+            text = target.read_text(encoding="utf-8-sig")
+            assert "asha@example.org" in text and "ravi@example.org" in text
+        elif kind in reports.PDF_EXPORT_KINDS and kind not in {"item-report"}:
+            with fitz.open(target) as document:
+                text = " ".join(page.get_text() for page in document)
+            assert "asha@example.org" in text and "ravi@example.org" in text, kind
+            if kind in {"mark-list", "pdf", "subject-list"}:
+                assert "Set" in text, kind
+    from openpyxl import load_workbook
+    cells = [c.value for row in load_workbook(tmp_path / "marklist.xlsx")["Results"].iter_rows() for c in row]
+    assert "asha@example.org" in cells and "Email" in cells
+
+
 def test_rekey_and_rescore_roll_back_together_on_invalid_key(tmp_path):
     config = load_config(ROOT / "examples" / "sample-test.json")
     repository = Repository(tmp_path / "exam.sqlite3")

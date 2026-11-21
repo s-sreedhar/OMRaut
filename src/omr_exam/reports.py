@@ -72,6 +72,22 @@ def class_results(config: dict[str, Any], records: list[dict[str, Any]], set_cod
     return output
 
 
+def _name_with_email(row: dict[str, Any], style: Any, name: str | None = None) -> Any:
+    """Student name with the email (if known) on a smaller second line, as a PDF table cell."""
+    from reportlab.platypus import Paragraph
+    from xml.sax.saxutils import escape
+    name = str(row.get("student_name") or "" if name is None else name).strip()
+    email = str(row.get("email") or "").strip()
+    if not email:
+        return Paragraph(escape(name), style) if name and style is not None else name
+    return Paragraph(f"{escape(name)}<br/><font size='6.5' color='#52606d'>{escape(email)}</font>", style)
+
+
+def _email_suffix(row: dict[str, Any]) -> str:
+    email = str(row.get("email") or "").strip()
+    return f"  |  {email}" if email else ""
+
+
 def source_file_details(record: dict[str, Any]) -> tuple[str, str, str]:
     """Return the original uploaded basename, optional PDF page, and recorded import time."""
     raw_path = str(record.get("image_path") or "")
@@ -261,7 +277,7 @@ def export_csv(config: dict[str, Any], records: list[dict[str, Any]], output: st
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     question_ids = [str(question["id"]) for question in config["questions"]]
-    columns = ["rank", "roll_number", "student_name", "class_name", "set_code", "total", "percent", "percentile", "correct", "incorrect", "blank", "review_required", "source_file", "page", "imported_at_utc", *[f"Q{qid}" for qid in question_ids]]
+    columns = ["rank", "roll_number", "student_name", "email", "class_name", "set_code", "total", "percent", "percentile", "correct", "incorrect", "blank", "review_required", "source_file", "page", "imported_at_utc", *[f"Q{qid}" for qid in question_ids]]
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
@@ -269,7 +285,7 @@ def export_csv(config: dict[str, Any], records: list[dict[str, Any]], output: st
             output_row = dict(row)
             output_row["source_file"], output_row["page"], output_row["imported_at_utc"] = source_file_details(row)
             output_row.update({f"Q{qid}": row["answers"].get(qid, "") or "" for qid in question_ids})
-            for field in ("roll_number", "student_name", "class_name", "set_code", "source_file", *[f"Q{qid}" for qid in question_ids]):
+            for field in ("roll_number", "student_name", "email", "class_name", "set_code", "source_file", *[f"Q{qid}" for qid in question_ids]):
                 output_row[field] = _safe_spreadsheet_text(output_row.get(field))
             writer.writerow(output_row)
     return path
@@ -288,14 +304,14 @@ def export_xlsx(config: dict[str, Any], records: list[dict[str, Any]], output: s
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Results"
-    headers = ["Rank", "Roll number", "Name", "Class", "Set", "Score", "Percent", "Percentile", "Correct", "Incorrect", "Blank", "Needs review", "Source file", "PDF page", "Imported at (UTC)"] + [f"Q{q['id']}" for q in config["questions"]]
+    headers = ["Rank", "Roll number", "Name", "Email", "Class", "Set", "Score", "Percent", "Percentile", "Correct", "Incorrect", "Blank", "Needs review", "Source file", "PDF page", "Imported at (UTC)"] + [f"Q{q['id']}" for q in config["questions"]]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="17324D")
     for row in rows:
         filename, page, imported_at = source_file_details(row)
-        sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("percent"), row.get("percentile"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No", _safe_spreadsheet_text(filename), page, imported_at] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
+        sheet.append([row.get("rank"), _safe_spreadsheet_text(row.get("roll_number")), _safe_spreadsheet_text(row.get("student_name", "")), _safe_spreadsheet_text(row.get("email", "")), _safe_spreadsheet_text(row.get("class_name", "")), _safe_spreadsheet_text(row.get("set_code")), row.get("total"), row.get("percent"), row.get("percentile"), row.get("correct"), row.get("incorrect"), row.get("blank"), "Yes" if row.get("review_required") else "No", _safe_spreadsheet_text(filename), page, imported_at] + [_safe_spreadsheet_text(row["answers"].get(str(q["id"]))) for q in config["questions"]])
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     for col_idx, column in enumerate(sheet.columns, 1):
@@ -385,7 +401,7 @@ def export_report_pdf(config: dict[str, Any], records: list[dict[str, Any]], out
     data = [["Rank", "Roll", "Student", "Class", "Set", "Score", "Correct", "Wrong", "Blank", "Source file", "Imported at (UTC)"]]
     for row in rows:
         filename, _page, imported_at = source_file_details(row)
-        data.append([row.get("rank"), row.get("roll_number"), row.get("student_name", ""), row.get("class_name", ""),
+        data.append([row.get("rank"), row.get("roll_number"), _name_with_email(row, styles["ReportSmall"]), row.get("class_name", ""),
                      row.get("set_code"), _fmt_score(row.get("total")), row.get("correct"), row.get("incorrect"), row.get("blank"),
                      Paragraph(escape(filename), styles["ReportSmall"]), Paragraph(escape(imported_at), styles["ReportSmall"])])
     table = Table(data, repeatRows=1, colWidths=[28, 50, 90, 42, 28, 48, 38, 38, 34, 139, 96])
@@ -602,7 +618,7 @@ def export_student_scorecards_pdf(config: dict[str, Any], records: list[dict[str
         if index:
             content.append(PageBreak())
         name = row.get("student_name") or "Student"
-        identity = f"{name} · Roll {row.get('roll_number', '')} · {row.get('class_name') or config['test']['class']}" + (f" · Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "")
+        identity = f"{name} · Roll {row.get('roll_number', '')} · {row.get('class_name') or config['test']['class']}" + (f" · Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "") + (f" · {row['email']}" if row.get("email") else "")
         content.extend(_pdf_header_with_logo(
             [Paragraph(escape(config["test"]["title"]), styles["ReportTitle"]),
              Paragraph(escape(f"{', '.join(config['test']['subjects'])} · {config['test']['date']}"), styles["Normal"]),
@@ -748,14 +764,16 @@ def export_subject_score_list_pdf(config: dict[str, Any], records: list[dict[str
          Paragraph(escape(f"{config['test']['title']}  |  {config['test']['class']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"])],
         doc.width, logo_data,
     ) + [Spacer(1, 10)]
-    headers = ["Rank", "Roll number", "Candidate name", "Uploaded file", "Imported at (UTC)", *subjects, "Total", "%"]
+    multi_set = len(config["sheet"]["set_codes"]) > 1
+    headers = ["Rank", "Roll number", "Candidate name", *(["Set"] if multi_set else []), "Uploaded file", "Imported at (UTC)", *subjects, "Total", "%"]
     data = [headers]
     for row in rows:
         by_subject = _student_subject_scores(row, _subject_for_question(config, row.get("set_code")))
         filename, _page, imported_at = source_file_details(row)
-        data.append([row.get("rank"), row.get("roll_number"), row.get("student_name") or "", *
+        data.append([row.get("rank"), row.get("roll_number"), _name_with_email(row, styles["ReportSmall"]), *
+                     ([row.get("set_code") or ""] if multi_set else []), *
                      [filename, imported_at], *[round(by_subject.get(subject, 0), 2) for subject in subjects], row.get("total"), row.get("percent")])
-    first_widths = [34, 58, 118, 128, 92]
+    first_widths = [34, 58, 118, *([30] if multi_set else []), 128, 92]
     widths = first_widths + [max(46, min(64, 430 / max(1, len(subjects))))] * len(subjects) + [52, 42]
     content.append(_styled_table(data, widths, repeat=1, font_size=7))
     content.extend([Spacer(1, 8), Paragraph(escape(f"Students: {len(rows)}  |  Maximum score: {max_score(config):g}  |  Rank ties share the same rank."), styles["ReportMuted"])])
@@ -793,7 +811,7 @@ def export_candidate_response_pdf(config: dict[str, Any], records: list[dict[str
         content.extend(_pdf_header_with_logo(
             [Paragraph("QUESTION RESPONSE ANALYSIS", styles["ReportTitle"]),
              Paragraph(escape(f"{config['test']['title']}  |  {config['test']['date']}  |  {row_subjects}"), styles["Normal"]),
-             Paragraph(escape(f"{row.get('student_name') or 'Student'}  |  Roll {row.get('roll_number')}  |  Class {row.get('class_name') or config['test']['class']}  |  Set {row.get('set_code')}"), styles["Heading3"]),
+             Paragraph(escape(f"{row.get('student_name') or 'Student'}  |  Roll {row.get('roll_number')}  |  Class {row.get('class_name') or config['test']['class']}  |  Set {row.get('set_code')}{_email_suffix(row)}"), styles["Heading3"]),
              Paragraph(escape(f"Score {row.get('total'):g}/{maximum:g} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%  |  Class average {overall_stats['mean']}"), styles["ReportMuted"]),
              Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
             doc.width, logo_data,
@@ -858,7 +876,7 @@ def export_subsection_pdf(config: dict[str, Any], records: list[dict[str, Any]],
             group["points"] += float(answer.get("points", 0))
         content.extend(_pdf_header_with_logo(
             [Paragraph("SUB-SECTION PERFORMANCE", styles["ReportTitle"]),
-             Paragraph(escape(f"{config['test']['title']}  |  {row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Rank {row.get('rank')}  |  Score {row.get('total')}"), styles["Normal"]),
+             Paragraph(escape(f"{config['test']['title']}  |  {row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Rank {row.get('rank')}  |  Score {row.get('total')}" + (f"  |  Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "") + _email_suffix(row)), styles["Normal"]),
              Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
             doc.width, logo_data,
         ))
@@ -982,7 +1000,7 @@ def export_assessment_pdf(config: dict[str, Any], records: list[dict[str, Any]],
         content.extend(_pdf_header_with_logo(
             [Paragraph("TEST PERFORMANCE ANALYSIS", styles["ReportTitle"]),
              Paragraph(escape(f"{config['test']['title']}  |  {', '.join(subjects)}  |  {config['test']['date']}"), styles["Normal"]),
-             Paragraph(escape(f"{row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Class {row.get('class_name') or config['test']['class']}"), styles["Heading2"]),
+             Paragraph(escape(f"{row.get('student_name') or 'Student'} [{row.get('roll_number')}]  |  Class {row.get('class_name') or config['test']['class']}" + (f"  |  Set {row.get('set_code')}" if len(config["sheet"]["set_codes"]) > 1 else "") + _email_suffix(row)), styles["Heading2"]),
              Paragraph(escape(f"Score {row.get('total')}/{max_score(config)} ({row.get('percent')}%)  |  Rank {row.get('rank')}  |  Percentile {row.get('percentile')}%"), styles["Heading3"]),
              Paragraph(escape(f"Candidates {stats['students']}  |  Average {stats['mean']}  |  High {stats['high']}  |  Low {stats['low']}  |  Pass rate {stats['pass_rate']}%"), styles["ReportMuted"]),
              Paragraph(escape(_source_line(row)), styles["ReportMuted"])],
@@ -1077,9 +1095,10 @@ def export_mark_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], 
         textColor=colors.HexColor("#111827"),
     )
 
+    multi_set = len(config["sheet"]["set_codes"]) > 1
     table_data: list[list[Any]] = [
-        ["", "", "Total", "", "", "", "", ""],
-        ["Roll No", "Name", "R", "W", "B", "Marks", "%", "Rank"],
+        ["", "", *([""] if multi_set else []), "Total", "", "", "", "", ""],
+        ["Roll No", "Name", *(["Set"] if multi_set else []), "R", "W", "B", "Marks", "%", "Rank"],
     ]
     previous_score: Any = object()
     dense_rank = 0
@@ -1090,10 +1109,11 @@ def export_mark_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], 
             previous_score = total
         pct = max(0.0, (total / maximum) * 100.0) if maximum else 0.0
         student_name = str(row.get("student_name") or "").strip()
-        name_cell: Any = Paragraph(escape(student_name), name_style) if student_name else ""
+        name_cell: Any = _name_with_email(row, name_style) if (student_name or row.get("email")) else ""
         table_data.append([
             str(row.get("roll_number") or ""),
             name_cell,
+            *([str(row.get("set_code") or "")] if multi_set else []),
             str(int(row.get("correct", 0))),
             str(int(row.get("incorrect", 0))),
             str(int(row.get("blank", 0))),
@@ -1102,7 +1122,8 @@ def export_mark_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], 
             str(dense_rank),
         ])
 
-    col_widths = [82, 173, 30, 30, 30, 56, 46, 40]
+    col_widths = [78, 150, 30, 30, 30, 30, 56, 46, 40] if multi_set else [82, 173, 30, 30, 30, 56, 46, 40]
+    span_start = 3 if multi_set else 2
     table = Table(table_data, repeatRows=2, colWidths=col_widths)
     rule_color = colors.HexColor("#1f2937")
     table.setStyle(TableStyle([
@@ -1110,10 +1131,11 @@ def export_mark_list_pdf(config: dict[str, Any], records: list[dict[str, Any]], 
         ("FONTSIZE", (0, 0), (-1, 1), 9.0),
         ("FONTSIZE", (0, 2), (-1, -1), 8.5),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
-        ("SPAN", (2, 0), (4, 0)),
-        ("ALIGN", (2, 0), (4, 0), "CENTER"),
+        ("SPAN", (span_start, 0), (span_start + 2, 0)),
+        ("ALIGN", (span_start, 0), (span_start + 2, 0), "CENTER"),
         ("ALIGN", (0, 1), (1, -1), "LEFT"),
-        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+        ("ALIGN", (2, 1), (-1, -1), "CENTER" if multi_set else "RIGHT"),
+        *([("ALIGN", (span_start, 1), (-1, -1), "RIGHT")] if multi_set else []),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LINEABOVE", (0, 0), (-1, 0), 0.75, rule_color),
         ("LINEBELOW", (0, 1), (-1, 1), 0.75, rule_color),
@@ -1158,6 +1180,7 @@ def export_json(config: dict[str, Any], records: list[dict[str, Any]], output: s
             "rank": row["rank"],
             "roll_number": row.get("roll_number", ""),
             "student_name": row.get("student_name", ""),
+            "email": row.get("email", ""),
             "class_name": row.get("class_name", ""),
             "set_code": row.get("set_code", ""),
             "total": row.get("total"),

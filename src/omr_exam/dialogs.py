@@ -1695,7 +1695,7 @@ class BatchLogDialog(AppDialog):
 class ExportDialog(AppDialog):
     """Choose what to export: save one file, or tick several and save them together in one folder."""
 
-    def __init__(self, parent, defaults: tuple[str, ...] = ("xlsx", "pdf", "cards")):
+    def __init__(self, parent, defaults: tuple[str, ...] = ("xlsx", "pdf", "cards"), batch_count: int = 1):
         from omr_exam.reports import EXPORTS
 
         super().__init__(parent, "Export results", "Save one file, or tick several and save them together in a folder.",
@@ -1703,6 +1703,13 @@ class ExportDialog(AppDialog):
         self.action: tuple[str, Any] | None = None
         self.checks: dict[str, QCheckBox] = {}
         self._row_frames: dict[str, QFrame] = {}
+        self.all_batches_check: QCheckBox | None = None
+        if batch_count > 1:
+            self.all_batches_check = QCheckBox(f"Combine all {batch_count} batches of this exam (all sets, one ranking)")
+            self.all_batches_check.setChecked(True)
+            self.all_batches_check.setAccessibleName("Export all batches combined")
+            self.all_batches_check.setToolTip("Untick to export only the batch currently open. A student scanned twice is counted once, using the latest sheet.")
+            self.body.addWidget(self.all_batches_check)
 
         filter_row = QHBoxLayout()
         filter_row.setSpacing(8)
@@ -1792,6 +1799,10 @@ class ExportDialog(AppDialog):
         self.summary_label.setText(f"{count} of {total} selected")
         self.save_all.setEnabled(count > 0)
         self.save_all.setText(f"Export {count} selected to a folder" if count else "Tick at least one file")
+
+    @property
+    def combine_all_batches(self) -> bool:
+        return bool(self.all_batches_check is not None and self.all_batches_check.isChecked())
 
     def _one(self, kind: str):
         self.action = ("one", kind)

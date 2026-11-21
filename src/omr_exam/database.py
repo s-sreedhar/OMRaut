@@ -628,9 +628,38 @@ class Repository:
             return db.execute("SELECT EXISTS(SELECT 1 FROM students LIMIT 1)").fetchone()[0] == 1
 
     def results_for_batch(self, batch_id: int) -> list[dict[str, Any]]:
+        return self._results("WHERE r.batch_id=?", (batch_id,))
+
+    def results_for_test(self, test_id: int) -> list[dict[str, Any]]:
+        """Results of every batch (all sets) of one test, combined.
+
+        If the same roll number appears in several batches (a re-scan), only the most
+        recent sheet is kept so a student is never counted twice.
+        """
+        rows = self._results("JOIN batches b ON b.id=r.batch_id WHERE b.test_id=?", (test_id,))
+        latest: dict[str, dict[str, Any]] = {}
+        unnumbered: list[dict[str, Any]] = []
+        for row in sorted(rows, key=lambda item: int(item["id"])):
+            roll = str(row.get("roll_number") or "").strip()
+            if roll:
+                latest[roll] = row
+            else:
+                unnumbered.append(row)
+        combined = list(latest.values()) + unnumbered
+        combined.sort(key=lambda item: (str(item.get("roll_number") or ""), str(item.get("image_path") or "")))
+        return combined
+
+    def test_export_status(self, test_id: int) -> dict[str, int]:
+        """Counts of batches that are incomplete, to guard exam-wide exports."""
+        with _database_connection(self.path) as db:
+            batches = db.execute("SELECT COUNT(*) FROM batches WHERE test_id=?", (test_id,)).fetchone()[0]
+            incomplete = db.execute("SELECT COUNT(*) FROM batches WHERE test_id=? AND status!='complete'", (test_id,)).fetchone()[0]
+        return {"batches": int(batches), "incomplete": int(incomplete)}
+
+    def _results(self, clause: str, params: tuple) -> list[dict[str, Any]]:
         with _database_connection(self.path) as db:
             db.row_factory = sqlite3.Row
-            rows = db.execute("SELECT r.* FROM results r WHERE r.batch_id=? ORDER BY r.roll_number,r.image_path", (batch_id,)).fetchall()
+            rows = db.execute(f"SELECT r.* FROM results r {clause} ORDER BY r.roll_number,r.image_path", params).fetchall()
             student_rows = db.execute("SELECT roll_number,name,class_name,email FROM students").fetchall()
             results = [dict(row) for row in rows]
         students_by_roll = {str(s["roll_number"]): dict(s) for s in student_rows}

@@ -2087,8 +2087,8 @@ class MainWindow(QMainWindow):
         if row >= 0:
             self.show_student_performance(row)
 
-    def _configure_performance_columns(self, subjects: list[str], show_set: bool) -> list[str]:
-        headers = ["Rank", "Roll number", "Student", "Class", "Set", *subjects, "Total", "%", "Percentile", "Correct", "Wrong", "Blank", "Status"]
+    def _configure_performance_columns(self, subjects: list[str], show_set: bool, show_email: bool = False) -> list[str]:
+        headers = ["Rank", "Roll number", "Student", "Class", "Set", "Email", *subjects, "Total", "%", "Percentile", "Correct", "Wrong", "Blank", "Status"]
         old_count = self.performance_table.columnCount()
         for col in range(max(old_count, len(headers))):
             self.performance_table.setItemDelegateForColumn(col, self._performance_default_delegate)
@@ -2096,6 +2096,7 @@ class MainWindow(QMainWindow):
         self.performance_table.setHorizontalHeaderLabels(headers)
         self.performance_table.setItemDelegateForColumn(len(headers) - 1, self._performance_status_delegate)
         self.performance_table.setColumnHidden(4, not show_set)
+        self.performance_table.setColumnHidden(5, not show_email)
         header = self.performance_table.horizontalHeader()
         header.setStretchLastSection(False)
         for col in range(len(headers)):
@@ -2342,6 +2343,7 @@ class MainWindow(QMainWindow):
                     str(row.get("student_name") or ""),
                     str(row.get("class_name") or ""),
                     str(row.get("set_code") or ""),
+                    str(row.get("email") or ""),
                     status_text,
                 )).casefold()
                 if not all(tok in haystack for tok in tokens):
@@ -2382,8 +2384,9 @@ class MainWindow(QMainWindow):
             self.results_filter_hint.setText("")
 
         show_set = len(self.config["sheet"]["set_codes"]) >= 2
-        headers = self._configure_performance_columns(subjects, show_set)
-        right_cols = {0, *range(5, len(headers) - 1)}
+        show_email = any(str(row.get("email") or "").strip() for row in all_rows)
+        headers = self._configure_performance_columns(subjects, show_set, show_email)
+        right_cols = {0, *range(6, len(headers) - 1)}
 
         self.performance_table.setUpdatesEnabled(False)
         self.performance_table.blockSignals(True)
@@ -2398,6 +2401,7 @@ class MainWindow(QMainWindow):
                     record.get("student_name", "") or "—",
                     record.get("class_name", "") or "—",
                     record.get("set_code", "") or "—",
+                    record.get("email", "") or "—",
                     *subject_cells,
                     "—" if record.get("total") is None else f"{record['total']:g}",
                     "—" if record.get("percent") is None else f"{record['percent']:g}",
@@ -2513,19 +2517,25 @@ class MainWindow(QMainWindow):
     def open_exports(self):
         if not self._exports_allowed():
             return
-        dialog = ExportDialog(self)
+        batch_count = len(self.repo.batches(self.active_test_id)) if self.active_test_id is not None else 1
+        dialog = ExportDialog(self, batch_count=batch_count)
         if not dialog.exec() or dialog.action is None:
             return
+        records = self.result_records
+        if dialog.combine_all_batches:
+            records = self._combined_records()
+            if records is None:
+                return
         mode, value = dialog.action
         if mode == "one":
-            self.export_results(value, checked=True)
+            self.export_results(value, checked=True, records=records)
             return
         folder = choose_folder(self, "Choose a folder for the exported files")
         if not folder:
             return
         try:
             _institute, logo = self.sheet_branding()
-            written = export_all(self.config, self.result_records, folder, value, logo=logo)
+            written = export_all(self.config, records, folder, value, logo=logo)
         except Exception as exc:
             alert(self, "Export failed", str(exc), "bad")
             return
@@ -2553,9 +2563,30 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def export_results(self, kind: str, checked: bool = False):
+    def _combined_records(self) -> list[dict[str, Any]] | None:
+        """Results of every batch of the active test, or None (after telling the user) if not exportable."""
+        status = self.repo.test_export_status(self.active_test_id)
+        if status["incomplete"]:
+            alert(self, "A batch is incomplete",
+                  f"{status['incomplete']} of this exam's {status['batches']} batches did not finish processing. "
+                  "Re-scan or remove them before exporting combined results.", "warn")
+            return None
+        records = self.repo.results_for_test(self.active_test_id)
+        if not records:
+            alert(self, "No results yet", "Scan a batch of sheets first.")
+            return None
+        unresolved = sum(bool(record.get("review_required")) for record in records)
+        if unresolved:
+            alert(self, "Review needed before exporting",
+                  f"{unresolved} sheet{'s' if unresolved != 1 else ''} across the exam's batches still "
+                  f"{'have' if unresolved != 1 else 'has'} unclear marks or roll numbers. Open those batches and finish the review first.", "warn")
+            return None
+        return records
+
+    def export_results(self, kind: str, checked: bool = False, records: list[dict[str, Any]] | None = None):
         if not checked and not self._exports_allowed():
             return
+        records = self.result_records if records is None else records
         name = EXPORTS[kind][2]
         extension = Path(name).suffix.lower()
         filter_text = ("Excel workbook (*.xlsx)" if extension == ".xlsx" else
@@ -2570,9 +2601,9 @@ class MainWindow(QMainWindow):
             exporter = export_function(kind)
             if kind in PDF_EXPORT_KINDS:
                 _institute, logo = self.sheet_branding()
-                saved = exporter(self.config, self.result_records, path, logo=logo)
+                saved = exporter(self.config, records, path, logo=logo)
             else:
-                saved = exporter(self.config, self.result_records, path)
+                saved = exporter(self.config, records, path)
             if confirm(self, "Export complete", f"Saved <b>{saved.name}</b>.", "Open file", "Close"):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved.resolve())))
         except Exception as exc:
